@@ -1,9 +1,9 @@
 #include <WiFi.h>             // Header File for WiFi
 //#include <WiFiClientSecure.h> // Header File for secured WiFi client
+#include "BLEUtils.h"
+#include "BLEScan.h"
+#include "BLEAdvertisedDevice.h"
 #include "BLEDevice.h"
-//#include <BLEUtils.h>
-//#include <BLEScan.h>
-//#include <BLEAdvertisedDevice.h>
 
 
 //-----------------Preprocessor-------------------------//
@@ -13,6 +13,7 @@
 #define DELAY_TIME_WIFI_CONN 500
 #define DELAY_TIME_BLE_SCAN  600
 #define DELAY_TIME_MAIN_LOOP 3000
+#define DELAY_TIME_BLE_CONN  5000
 #define DELAY_LIMIT_WIFI_CLI 15000
 #define AP_SSID              "esp32"
 #define BLUE_TOOTH_SCAN_TIME 50
@@ -29,8 +30,8 @@
 //-----------------Global variable----------------------//
 
 BLEScan* pBLEScan;             // Bluetooth Scanner
+BLEClient* pClient;            // BluetoothClient
 BLEAdvertisedDevice* myDevice; // Bluetooth Advertised device
-BLEClient* myClient;           // Bluetooth Client
 char *ssid = "YOUR_WIFI_SSID";
 char *pw = "YOUR_WIFI_PW";
 int portNo = PORT_NUMBER_HTTP;
@@ -43,6 +44,7 @@ static boolean connected = false;
 static BLEUUID WP_CTL_UUID(CHAR_UUID_CTL);
 static BLEUUID WP_MEAS_UUID(CHAR_UUID_MEAS);
 static BLEUUID WP_LOG_UUID(CHAR_UUID_LOG);
+static BLEUUID SERVICE_UUID("00001523-0000-1000-8000-00805f9b34fb");
 static BLERemoteCharacteristic* characteristic_cmd_control;
 static BLERemoteCharacteristic* characteristic_cmd_measurement;
 static BLERemoteCharacteristic* characteristic_cmd_log;
@@ -59,6 +61,7 @@ void connectBlueToothDevice();
 int scanDevices();
 int sendData(String dataString);
 bool connectToServer();
+void scanBlueToothDevice();
 
 //------------------------------------------------------//
 
@@ -85,10 +88,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
                 delete myDevice;
             myDevice = new BLEAdvertisedDevice(advertisedDevice);
 
-            Serial.printf("\n\nConnect to the Device: %s \n", advertisedDevice.toString().c_str());
-            connected = connectToServer();
-            doConnect = connected;
-            Serial.printf("Connected Device: %s \n", advertisedDevice.toString().c_str());
+            doConnect = true;
         }
     }
 };
@@ -120,7 +120,8 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, ui
 void setup() {
     Serial.begin(SERIAL_PORT_NUM); //Start Serial monitor in 9600
     initBLE(); // initialise the BLE scanner
-    connectBlueToothDevice(); //scan and connect a bluetooth device
+    scanBlueToothDevice(); //scan a bluetooth device
+    connectBlueToothDevice(); //connect a bluetooth device
     setupWiFi(); //initialise and connect to the WiFi
 }
 
@@ -129,7 +130,7 @@ void setup() {
 void loop() {
     if (doConnect) {
         //TODO read and send data
-        if (connected) { //TODO && myClient->isConnected()
+        if (connected && pClient->isConnected()) {
 
             if (characteristic_cmd_control->canRead()) {
                 std::string readStr = characteristic_cmd_control->readValue();
@@ -160,6 +161,7 @@ void loop() {
     } else {
         Serial.println("Bluetooth not connected..");
         Serial.println("Start scanning to reconnect...");
+        scanBlueToothDevice();
         connectBlueToothDevice();
     }
 
@@ -171,12 +173,20 @@ void loop() {
  * Initialise the BLE settings so that the ESP32 device could scan the BLE advertising devices.
  */
 void initBLE() {
+    Serial.println("Initialise the BLE module");
+
     BLEDevice::init("");
     pBLEScan = BLEDevice::getScan(); //create new scan
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
     pBLEScan->setActiveScan(true); //active scan uses more power, but get results faster
     pBLEScan->setInterval(BLE_SCAN_INTERVAL);
     pBLEScan->setWindow(BLE_SCAN_WINDOW_SIZE); // less than or equal to setInterval value
+
+    Serial.println(" - Create client");
+    pClient  = BLEDevice::createClient();
+    Serial.println(" - Client created\n\n");
+
+    pClient->setClientCallbacks(new MyClientCallback());
 }
 
 /**
@@ -191,7 +201,7 @@ void setupWiFi() {
  * Function that connects the device to the target WiFi.
  */
 void connectWiFi() {
-    Serial.print("Connecting to WiFi...");
+    Serial.print("\n\nConnecting to WiFi...");
 
     int count = 0;
 
@@ -215,6 +225,14 @@ void connectWiFi() {
 }
 
 void connectBlueToothDevice() {
+    Serial.println("\n\nBLE connection start");
+    Serial.printf("\nConnect to the Device: %s \n", myDevice->toString().c_str());
+    connected = connectToServer();
+    doConnect = connected;
+    Serial.printf("Connected Device: %s \n", myDevice->toString().c_str());
+}
+
+void scanBlueToothDevice() {
     while (true) {
         scanDevices();
 
@@ -238,14 +256,11 @@ int scanDevices() {
  */
 void checkCharacteristic(BLERemoteCharacteristic* pRemoteCharacteristic) {
     Serial.println(" - Found our characteristic");
-    Serial.println("Found characteristic : ");
     Serial.println(pRemoteCharacteristic->toString().c_str());
 
     // Read the value of the characteristic.
     if(pRemoteCharacteristic->canRead()) {
         std::string value = pRemoteCharacteristic->readValue();
-        Serial.print("The characteristic value was: ");
-        Serial.println(value.c_str());
     }
 
     // check if the target characteristic is notifiable.
@@ -289,41 +304,36 @@ void getCharacteristicFromService(BLERemoteService* pRemoteService) {
  * Connect to the BLE server.
  */
 bool connectToServer() {
-    // free the pre-allocated memory (if exist), and create new BLEClient instance
-    if (myClient != nullptr)
-        delete myClient;
-
     Serial.print("Forming a connection to ");
     Serial.println(myDevice->getAddress().toString().c_str());
-
-    BLEClient* pClient  = BLEDevice::createClient();
-
-    if (pClient == nullptr) {
-        Serial.println("Null client!");
-        return false;
-    }
-
-    Serial.println("\n\n - Created client");
-
-    pClient->setClientCallbacks(new MyClientCallback());
 
     // Connect to the remove BLE Server.
     BLEAddress myDevice_address = myDevice->getAddress();
     Serial.printf("target address: %s\n", myDevice_address.toString().c_str());
 
     esp_ble_addr_type_t ble_addr_type = myDevice->getAddressType();
-    Serial.printf("target address type: %d\n\n", ble_addr_type);
+    Serial.printf("target address type: %d\n", ble_addr_type);
 
-    pClient->connect(myDevice);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
+    bool isConnected = pClient->connect(myDevice_address);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
+
+    if (!isConnected) {
+        Serial.println("Failed to connect");
+        return false;
+    }
+
     Serial.println("\n - Connected to server");
+
+    delay(DELAY_TIME_BLE_CONN);
+
+    Serial.println("Get services - BLEClient::getServices()");
 
     std::map<std::string, BLERemoteService*> *services = pClient->getServices();
     std::map<std::string, BLERemoteService*>::iterator it = services->begin();
 
-    Serial.println("DEBUGGING -- Before for loop");
-
     if (services->empty())
         Serial.println("No service...");
+
+    Serial.println("Iterate services - start for loop in connectServer()");
 
     // free the pre-allocated memory (if exist), and create new BLERemoteCharacteristic instance
     if (characteristic_cmd_control != nullptr)
@@ -335,14 +345,8 @@ bool connectToServer() {
 
     for (it = services->begin(); it != services->end(); ++it) {
         BLERemoteService *ble_service = it->second;
-
-        Serial.println("for loop - characteristic uuid test");
         getCharacteristicFromService(ble_service);
     }
-
-    Serial.println("DEBUGGING -- After for loop");
-
-    myClient = pClient;
 }
 
 /**
