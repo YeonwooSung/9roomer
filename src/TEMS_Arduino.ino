@@ -45,6 +45,9 @@
 #define RES_RESULT_RET_SIZE  11
 #define RES_LOG_INFOR_SIZE   13
 
+#define ALLOCATE_SIZE_RESULT 9
+#define ALLOCATE_SIZE_LOG    11
+
 //------------------------------------------------------//
 
 
@@ -63,6 +66,8 @@ char *host = "www.your_host_url";
 String hostStr = String(host);
 String url = "/collect"; //the target URL
 
+uint8_t resultData[ALLOCATE_SIZE_RESULT] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+
 static boolean doConnect = false;
 static boolean connected = false;
 
@@ -75,15 +80,15 @@ static BLERemoteCharacteristic* characteristic_cmd_control;
 static BLERemoteCharacteristic* characteristic_cmd_measurement;
 static BLERemoteCharacteristic* characteristic_cmd_log;
 
-const static int cmd_RESULT_RETURN = 0xA0;
-const static int cmd_BLE_STARTSTOP = 0x10;
+static uint8_t cmd_RESULT_RETURN = 0xA0;
+static uint8_t cmd_BLE_STARTSTOP = 0x10;
 
-const static int cmd_BLE_Date_Time_Set = 0x20;
-const static int cmd_LOG_INFO_QUERY = 0x21;
-const static int cmd_LOG_DATA_SEND = 0xA1;
+static uint8_t cmd_BLE_Date_Time_Set = 0x20;
+static uint8_t cmd_LOG_INFO_QUERY = 0x21;
+static uint8_t cmd_LOG_DATA_SEND = 0xA1;
 
-const static int cmd_BLE_USER_NAME_SET = 0x30;
-const static int cmd_BLE_USER_NAME_QUERY = 0x31;
+static uint8_t cmd_BLE_USER_NAME_SET = 0x30;
+static uint8_t cmd_BLE_USER_NAME_QUERY = 0x31;
 
 //------------------------------------------------------//
 
@@ -168,29 +173,10 @@ void setup() {
 /* The main loop of the arduino. */
 void loop() {
     if (doConnect) {
-        //TODO read and send data
         if (connected && pClient->isConnected()) {
 
-            if (characteristic_cmd_control->canRead()) {
-                std::string readStr = characteristic_cmd_control->readValue();
-                const char *readStr_cStr = readStr.c_str();
-                String readData = String(readStr_cStr);
-                Serial.println(readData);
-            }
-
-            if (characteristic_cmd_measurement->canRead()) {
-                std::string readStr = characteristic_cmd_measurement->readValue();
-                const char *readStr_cStr = readStr.c_str();
-                String readData = String(readStr_cStr);
-                Serial.println(readData);
-            }
-
-            if (characteristic_cmd_log->canRead()) {
-                std::string readStr = characteristic_cmd_log->readValue();
-                const char *readStr_cStr = readStr.c_str();
-                String readData = String(readStr_cStr);
-                Serial.println(readData);
-            }
+            // read the measured data from device via BLE communication
+            readMeasureResult();
 
         } else {
             Serial.println("Bluetooth disconnected!!");
@@ -224,12 +210,36 @@ inline void waitUntilReadable_characteristic(BLERemoteCharacteristic *characteri
  * Read the measured data from the device.
  */
 inline void readMeasureResult() {
-    characteristic_cmd_control->writeValue(&cmd_Date_Time_Set, REQ_RESULT_RET_SIZE, true); //send cmd_Result_Return
+    characteristic_cmd_control->writeValue(&cmd_RESULT_RETURN, REQ_RESULT_RET_SIZE, true); //send cmd_Result_Return
 
-    //TODO need to check if this is correct characteristic
-    waitUntilReadable_characteristic(characteristic_cmd_measurement);
+    waitUntilReadable_characteristic(characteristic_cmd_measurement); //delay until the characteristic_cmd_measurement is readable
 
     uint8_t *rawData = characteristic_cmd_control->readRawData(); //get raw data (hex bytes)
+
+    rawData += 2;
+
+    int i;
+    for (i = 0; i < ALLOCATE_SIZE_RESULT; i++) {
+        Serial.printf("%d\n", *rawData); //print out data
+        resultData[i] = *rawData;
+        rawData++;
+    }
+}
+
+void setDateTime(uint8_t *dateTimeBuffer) {
+    //TODO dummy data....
+    dateTimeBuffer += 2;
+    *dateTimeBuffer = 0x13;
+    dateTimeBuffer++;
+    *dateTimeBuffer = 7;
+    dateTimeBuffer++;
+    *dateTimeBuffer = 4;
+    dateTimeBuffer++;
+    *dateTimeBuffer = 0;
+    dateTimeBuffer++;
+    *dateTimeBuffer = 0;
+    dateTimeBuffer++;
+    *dateTimeBuffer = 0;
 }
 
 /**
@@ -237,18 +247,26 @@ inline void readMeasureResult() {
  */
 void handshake_setup_BLE() {
     if (pClient->isConnected()) {
-        characteristic_cmd_control->writeValue(&cmd_Date_Time_Set, REQ_DATE_SET_SIZE, false); //send cmd_Date_Time_Set
+        //buffer for the date time data
+        uint8_t *dateTimeBuffer = (uint8_t*) calloc(REQ_DATE_SET_SIZE, sizeof(uint8_t));
+
+        dateTimeBuffer[0] = cmd_BLE_Date_Time_Set;
+        dateTimeBuffer[1] = 6; // 6 bytes for date time
+
+        setDateTime(dateTimeBuffer); //get current date time and store it in the date time buffer.
+
+        characteristic_cmd_control->writeValue(dateTimeBuffer, REQ_DATE_SET_SIZE, false); //send cmd_Date_Time_Set
 
         delay(DELAY_SEND_RES_RET);
 
-        readMeasureResult();
+        free(dateTimeBuffer); //free the allocated memory
 
-        //TODO send cmd_Log_Infor_QUERY
+        readMeasureResult(); //read the measured data from the device via BLE communication
 
-        //TODO need to check if this is correct characteristic
-        waitUntilReadable_characteristic(characteristic_cmd_log);
-
-        //TODO receive cmd_Log_Infor_QUERY
+        characteristic_cmd_log->writeValue(&cmd_LOG_INFO_QUERY, REQ_LOG_INFOR_SIZE, true); //send cmd_Log_Infor_QUERY
+        waitUntilReadable_characteristic(characteristic_cmd_log); //delay until the cmd_LOG_INFO_QUERY is readable
+        uint8_t *logRawData = characteristic_cmd_log->readRawData(); //get raw log data (hex bytes)
+        //TODO log data
     }
 }
 
@@ -453,7 +471,7 @@ int sendData(String queryString) {
     String header = "GET " + String(url) + "?" + String(queryString) + " HTTP/1.1";
 
     client.println(header);
-    client.println("User-Agent: ESP32"); //TODO add device id
+    client.println("User-Agent: ESP32_TEMS");
     client.println("Host: " + hostStr);
     client.println("Connection: closed");
     client.println();
