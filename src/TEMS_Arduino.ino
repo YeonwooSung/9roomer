@@ -10,19 +10,40 @@
 
 #define PORT_NUMBER_HTTP     80
 #define SERIAL_PORT_NUM      115200
+
+#define DELAY_SEND_RES_RET   500
+
 #define DELAY_TIME_WIFI_CONN 500
 #define DELAY_TIME_BLE_SCAN  600
 #define DELAY_TIME_MAIN_LOOP 3000
 #define DELAY_TIME_BLE_CONN  5000
+
+#define DELAY_WAIT_CONNECT   1000
+#define DELAY_WAIT_RESPONSE  5000
+
 #define DELAY_LIMIT_WIFI_CLI 15000
+
 #define AP_SSID              "esp32"
+
 #define BLUE_TOOTH_SCAN_TIME 50
 #define BLE_SCAN_WINDOW_SIZE 99
 #define BLE_SCAN_INTERVAL    100
+
 #define TARGET_DEVICE_NAME   "BLE_Gamma:lsj4"
 #define CHAR_UUID_CTL        "00001524-1212-efde-1523-785feabcd123"
 #define CHAR_UUID_MEAS       "00001525-1212-efde-1523-785feabcd123"
 #define CHAR_UUID_LOG        "00001526-1212-efde-1523-785feabcd123"
+
+#define REQ_RESULT_RET_SIZE  1
+#define REQ_LOG_INFOR_SIZE   1
+#define REQ_LOG_DATA_SIZE    1
+#define REQ_STAT_STOP_SIZE   4
+#define REQ_DATE_SET_SIZE    8
+
+//TODO result size re-check!!!!
+#define RES_LOG_DATA_SIZE    1
+#define RES_RESULT_RET_SIZE  11
+#define RES_LOG_INFOR_SIZE   13
 
 //------------------------------------------------------//
 
@@ -32,22 +53,37 @@
 BLEScan* pBLEScan;             // Bluetooth Scanner
 BLEClient* pClient;            // BluetoothClient
 BLEAdvertisedDevice* myDevice; // Bluetooth Advertised device
+
 char *ssid = "YOUR_WIFI_SSID";
 char *pw = "YOUR_WIFI_PW";
 int portNo = PORT_NUMBER_HTTP;
 int scanTime = BLUE_TOOTH_SCAN_TIME;
 char *host = "www.your_host_url";
+
 String hostStr = String(host);
 String url = "/collect"; //the target URL
+
 static boolean doConnect = false;
 static boolean connected = false;
+
 static BLEUUID WP_CTL_UUID(CHAR_UUID_CTL);
 static BLEUUID WP_MEAS_UUID(CHAR_UUID_MEAS);
 static BLEUUID WP_LOG_UUID(CHAR_UUID_LOG);
 static BLEUUID SERVICE_UUID("00001523-0000-1000-8000-00805f9b34fb");
+
 static BLERemoteCharacteristic* characteristic_cmd_control;
 static BLERemoteCharacteristic* characteristic_cmd_measurement;
 static BLERemoteCharacteristic* characteristic_cmd_log;
+
+const static int cmd_RESULT_RETURN = 0xA0;
+const static int cmd_BLE_STARTSTOP = 0x10;
+
+const static int cmd_BLE_Date_Time_Set = 0x20;
+const static int cmd_LOG_INFO_QUERY = 0x21;
+const static int cmd_LOG_DATA_SEND = 0xA1;
+
+const static int cmd_BLE_USER_NAME_SET = 0x30;
+const static int cmd_BLE_USER_NAME_QUERY = 0x31;
 
 //------------------------------------------------------//
 
@@ -62,6 +98,8 @@ int scanDevices();
 int sendData(String dataString);
 bool connectToServer();
 void scanBlueToothDevice();
+void handshake_setup_BLE();
+inline void readMeasureResult();
 
 //------------------------------------------------------//
 
@@ -123,6 +161,7 @@ void setup() {
     scanBlueToothDevice(); //scan a bluetooth device
     connectBlueToothDevice(); //connect a bluetooth device
     setupWiFi(); //initialise and connect to the WiFi
+    handshake_setup_BLE();
 }
 
 
@@ -163,11 +202,55 @@ void loop() {
         Serial.println("Start scanning to reconnect...");
         scanBlueToothDevice();
         connectBlueToothDevice();
+
+        delay(DELAY_WAIT_CONNECT);
+
+        handshake_setup_BLE(); //do handshake to set up the ble connection
     }
 
     delay(DELAY_TIME_MAIN_LOOP);
 }
 
+/**
+ * Loop until the given characteristic is readable.
+ *
+ * @param {characteristic} A pointer that points to the target characteristic.
+ */
+inline void waitUntilReadable_characteristic(BLERemoteCharacteristic *characteristic) {
+    while (!characteristic->canRead()) delay(DELAY_WAIT_RESPONSE);
+}
+
+/**
+ * Read the measured data from the device.
+ */
+inline void readMeasureResult() {
+    characteristic_cmd_control->writeValue(&cmd_Date_Time_Set, REQ_RESULT_RET_SIZE, true); //send cmd_Result_Return
+
+    //TODO need to check if this is correct characteristic
+    waitUntilReadable_characteristic(characteristic_cmd_measurement);
+
+    uint8_t *rawData = characteristic_cmd_control->readRawData(); //get raw data (hex bytes)
+}
+
+/**
+ * This function does a handshake to set up the ble connection.
+ */
+void handshake_setup_BLE() {
+    if (pClient->isConnected()) {
+        characteristic_cmd_control->writeValue(&cmd_Date_Time_Set, REQ_DATE_SET_SIZE, false); //send cmd_Date_Time_Set
+
+        delay(DELAY_SEND_RES_RET);
+
+        readMeasureResult();
+
+        //TODO send cmd_Log_Infor_QUERY
+
+        //TODO need to check if this is correct characteristic
+        waitUntilReadable_characteristic(characteristic_cmd_log);
+
+        //TODO receive cmd_Log_Infor_QUERY
+    }
+}
 
 /**
  * Initialise the BLE settings so that the ESP32 device could scan the BLE advertising devices.
