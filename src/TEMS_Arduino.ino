@@ -15,8 +15,10 @@
 
 #define DELAY_TIME_WIFI_CONN 500
 #define DELAY_TIME_BLE_SCAN  600
+#define DELAY_TIME_BLE_START 2000
 #define DELAY_TIME_MAIN_LOOP 3000
 #define DELAY_TIME_BLE_CONN  5000
+#define DELAY_TIME_BLE_DATA  60000
 
 #define DELAY_WAIT_CONNECT   1000
 #define DELAY_WAIT_RESPONSE  5000
@@ -37,16 +39,13 @@
 #define REQ_RESULT_RET_SIZE  1
 #define REQ_LOG_INFOR_SIZE   1
 #define REQ_LOG_DATA_SIZE    1
-#define REQ_STAT_STOP_SIZE   4
+#define REQ_START_STOP_SIZE  4
 #define REQ_DATE_SET_SIZE    8
-
-//TODO result size re-check!!!!
-#define RES_LOG_DATA_SIZE    1
-#define RES_RESULT_RET_SIZE  11
-#define RES_LOG_INFOR_SIZE   13
 
 #define ALLOCATE_SIZE_RESULT 9
 #define ALLOCATE_SIZE_LOG    11
+
+#define SIZE_OF_UINT8        sizeof(uint8_t)
 
 //------------------------------------------------------//
 
@@ -105,6 +104,10 @@ bool connectToServer();
 void scanBlueToothDevice();
 void handshake_setup_BLE();
 inline void readMeasureResult();
+inline void startMeasurement(uint8_t log_storage_interval);
+inline void stopMeasurement(uint8_t log_storage_interval);
+void readData();
+void checkRawData(uint8_t *rawData);
 
 //------------------------------------------------------//
 
@@ -139,7 +142,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 class MyClientCallback : public BLEClientCallbacks {
     void onConnect(BLEClient* pclient) {
         connected = true;
-        Serial.println("onConnect");
+        Serial.println("onConnect() activated");
     }
 
     void onDisconnect(BLEClient* pclient) {
@@ -154,8 +157,6 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, ui
     Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
     Serial.print(" of data length ");
     Serial.println(length);
-    Serial.print("data: ");
-    Serial.println((char*)pData);
 }
 
 
@@ -172,58 +173,47 @@ void setup() {
 
 /* The main loop of the arduino. */
 void loop() {
+    // check if the BLE scanner found the target device.
     if (doConnect) {
+        // check if the BLEClient is connected to the server
         if (connected && pClient->isConnected()) {
-
             // read the measured data from device via BLE communication
             readMeasureResult();
-
+            delay(DELAY_TIME_BLE_DATA);
         } else {
             Serial.println("Bluetooth disconnected!!");
             doConnect = false;
             connected = false;
+            delay(DELAY_TIME_MAIN_LOOP);
         }
     } else {
         Serial.println("Bluetooth not connected..");
         Serial.println("Start scanning to reconnect...");
-        scanBlueToothDevice();
-        connectBlueToothDevice();
+        scanBlueToothDevice();    //scan ble devices
+        connectBlueToothDevice(); //connect to the BLEServer
 
         delay(DELAY_WAIT_CONNECT);
 
         handshake_setup_BLE(); //do handshake to set up the ble connection
+
+        delay(DELAY_TIME_MAIN_LOOP);
     }
-
-    delay(DELAY_TIME_MAIN_LOOP);
-}
-
-/**
- * Loop until the given characteristic is readable.
- *
- * @param {characteristic} A pointer that points to the target characteristic.
- */
-inline void waitUntilReadable_characteristic(BLERemoteCharacteristic *characteristic) {
-    while (!characteristic->canRead()) delay(DELAY_WAIT_RESPONSE);
 }
 
 /**
  * Read the measured data from the device.
  */
 inline void readMeasureResult() {
+    Serial.println("\nSend cmd_Result_Return");
+
     characteristic_cmd_control->writeValue(&cmd_RESULT_RETURN, REQ_RESULT_RET_SIZE, true); //send cmd_Result_Return
 
-    waitUntilReadable_characteristic(characteristic_cmd_measurement); //delay until the characteristic_cmd_measurement is readable
+    delay(DELAY_WAIT_RESPONSE);
 
-    uint8_t *rawData = characteristic_cmd_control->readRawData(); //get raw data (hex bytes)
+    uint8_t *rawData = characteristic_cmd_measurement->readRawData();
+    checkRawData(rawData);
 
-    rawData += 2;
-
-    int i;
-    for (i = 0; i < ALLOCATE_SIZE_RESULT; i++) {
-        Serial.printf("%d\n", *rawData); //print out data
-        resultData[i] = *rawData;
-        rawData++;
-    }
+    Serial.println("readMeasureResult() finish");
 }
 
 void setDateTime(uint8_t *dateTimeBuffer) {
@@ -235,27 +225,135 @@ void setDateTime(uint8_t *dateTimeBuffer) {
     dateTimeBuffer++;
     *dateTimeBuffer = 4;
     dateTimeBuffer++;
-    *dateTimeBuffer = 0;
+    *dateTimeBuffer = 1;
     dateTimeBuffer++;
-    *dateTimeBuffer = 0;
+    *dateTimeBuffer = 1;
     dateTimeBuffer++;
-    *dateTimeBuffer = 0;
+    *dateTimeBuffer = 1;
+}
+
+/**
+ * Send the cmd_BLE_STARTSTOP to the device to either start or stop the measurement process.
+ *
+ * @param {new_stat} Should be either 0x01 or 0x00. 0x01 for start, and 0x00 for stop.
+ * @param {log_storage_interval} Log interval.
+ */
+void changeMeasurementStatus(uint8_t new_stat, uint8_t log_storage_interval) {
+    uint8_t logInterval;
+    uint8_t bleStat;
+
+    if (log_storage_interval <= 0x0A)
+        logInterval = 0x0A;
+    else
+        logInterval = 0x3c;
+
+    Serial.println("\nSend cmd_BLE_STARTSTOP");
+    uint8_t *startStopBuffer = (uint8_t *) calloc(REQ_START_STOP_SIZE, SIZE_OF_UINT8);
+
+    startStopBuffer[0] = cmd_BLE_STARTSTOP;
+    startStopBuffer[1] = 2;
+    startStopBuffer[2] = new_stat;
+    startStopBuffer[3] = logInterval;
+
+    characteristic_cmd_control->writeValue(startStopBuffer, REQ_START_STOP_SIZE, true); //send cmd_BLE_STARTSTOP
+    delay(DELAY_SEND_RES_RET);
+    free(startStopBuffer);
+    Serial.println("Finish sending cmd_BLE_STARTSTOP");
+}
+
+/**
+ * Send cmd_BLE_STARTSTOP to make the device start the measurement process.
+ *
+ * @param {log_storage_interval} Log interval.
+ */
+inline void startMeasurement(uint8_t log_storage_interval) {
+    changeMeasurementStatus(0x01, log_storage_interval);
+}
+
+/**
+ * Send cmd_BLE_STARTSTOP to make the device stop the measurement process.
+ *
+ * @param {log_storage_interval} Log interval.
+ */
+inline void stopMeasurement(uint8_t log_storage_interval) {
+    changeMeasurementStatus(0x00, log_storage_interval);
+}
+
+inline void iterateRawData(uint8_t *rawData, int len) {
+    Serial.print("Received data :");
+    for (int i = 0; i < len; i++) {
+        Serial.printf(" %d", *rawData);
+        rawData++;
+    }
+    Serial.println("");
+}
+
+void iterateLogInfo(uint8_t *rawData) {
+    Serial.println("Iterate Log Info");
+    iterateRawData(rawData, 13);
+}
+
+void iterateReturnedResult(uint8_t *rawData) {
+    Serial.println("Iterate Returned Result");
+    iterateRawData(rawData, 11);
+
+    if (*(rawData + 1) == 11) {
+        if (*(rawData + 2) != 1) {
+            //TODO need to check if this is the correct way of use the cmd_BLE_START_STOP
+            startMeasurement(0x0A); //log interval could be either 0x0A or 0x3C
+            delay(DELAY_TIME_BLE_START);
+        }
+    }
+}
+
+
+/**
+ * Check the first byte of the raw data to identify the response.
+ *
+ * @param {rawData} The pointer that points to the raw data.
+ */
+void checkRawData(uint8_t *rawData) {
+    switch (*rawData) {
+        case 0x21 : //cmd_LOG_INFO_QUERY
+            iterateLogInfo(rawData);
+            break;
+        case 0xA0 : //cmd_RESULT_RETURN
+            iterateReturnedResult(rawData);
+            break;
+        default :
+            Serial.printf("received = {%d}\n", *rawData);
+    }
+
+}
+
+/**
+ * Reads the raw data.
+ */
+void readData() {
+    uint8_t *rawData_log = characteristic_cmd_log->readRawData();
+    uint8_t *rawData_msr = characteristic_cmd_measurement->readRawData();
+
+    checkRawData(rawData_log);
+    checkRawData(rawData_msr);
 }
 
 /**
  * This function does a handshake to set up the ble connection.
  */
 void handshake_setup_BLE() {
+    Serial.println("\n\nHandshake start\n");
+
     if (pClient->isConnected()) {
         //buffer for the date time data
-        uint8_t *dateTimeBuffer = (uint8_t*) calloc(REQ_DATE_SET_SIZE, sizeof(uint8_t));
+        Serial.println("\nSend date time");
+        uint8_t *dateTimeBuffer = (uint8_t*) calloc(REQ_DATE_SET_SIZE, SIZE_OF_UINT8);
 
         dateTimeBuffer[0] = cmd_BLE_Date_Time_Set;
         dateTimeBuffer[1] = 6; // 6 bytes for date time
 
         setDateTime(dateTimeBuffer); //get current date time and store it in the date time buffer.
 
-        characteristic_cmd_control->writeValue(dateTimeBuffer, REQ_DATE_SET_SIZE, false); //send cmd_Date_Time_Set
+        characteristic_cmd_control->writeValue(dateTimeBuffer, REQ_DATE_SET_SIZE, true); //send cmd_Date_Time_Set
 
         delay(DELAY_SEND_RES_RET);
 
@@ -263,10 +361,13 @@ void handshake_setup_BLE() {
 
         readMeasureResult(); //read the measured data from the device via BLE communication
 
-        characteristic_cmd_log->writeValue(&cmd_LOG_INFO_QUERY, REQ_LOG_INFOR_SIZE, true); //send cmd_Log_Infor_QUERY
-        waitUntilReadable_characteristic(characteristic_cmd_log); //delay until the cmd_LOG_INFO_QUERY is readable
-        uint8_t *logRawData = characteristic_cmd_log->readRawData(); //get raw log data (hex bytes)
-        //TODO log data
+        //TODO characteristic_cmd_log
+        characteristic_cmd_control->writeValue(&cmd_LOG_INFO_QUERY, REQ_LOG_INFOR_SIZE, true); //send cmd_Log_Infor_QUERY
+
+        delay(DELAY_WAIT_RESPONSE);
+        readData();
+    } else {
+        Serial.println("- Not connected!\n");
     }
 }
 
@@ -325,6 +426,9 @@ void connectWiFi() {
     }
 }
 
+/**
+ * Connect to the target bluetooth device.
+ */
 void connectBlueToothDevice() {
     Serial.println("\n\nBLE connection start");
     Serial.printf("\nConnect to the Device: %s \n", myDevice->toString().c_str());
@@ -333,6 +437,10 @@ void connectBlueToothDevice() {
     Serial.printf("Connected Device: %s \n", myDevice->toString().c_str());
 }
 
+/**
+ * Scan the nearby bluetooth devices.
+ * Run the infinite loop to scan until it finds the device that we are looking for.
+ */
 void scanBlueToothDevice() {
     while (true) {
         scanDevices();
@@ -344,6 +452,12 @@ void scanBlueToothDevice() {
     }
 }
 
+/**
+ * Start scanning and check if there is the device that we are looking for.
+ * Returns the number of found devices.
+ *
+ * @return The number of found devices.
+ */
 int scanDevices() {
     BLEScanResults foundDevices = pBLEScan->start(scanTime, false);
     pBLEScan->clearResults(); //delete results from BLEScan buffer to release memory
@@ -418,7 +532,7 @@ bool connectToServer() {
     bool isConnected = pClient->connect(myDevice_address);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
 
     if (!isConnected) {
-        Serial.println("Failed to connect");
+        Serial.println("Connection failed");
         return false;
     }
 
