@@ -1,5 +1,4 @@
 #include <WiFi.h>             // Header File for WiFi
-//#include <WiFiClientSecure.h> // Header File for secured WiFi client
 #include "BLEUtils.h"
 #include "BLEScan.h"
 #include "BLEAdvertisedDevice.h"
@@ -11,17 +10,17 @@
 #define PORT_NUMBER_HTTP     80
 #define SERIAL_PORT_NUM      115200
 
-#define DELAY_SEND_RES_RET   500
+#define DELAY_SEND_RES_RET   200
 
 #define DELAY_TIME_WIFI_CONN 500
+#define DELAY_TIME_MAIN_LOOP 500
 #define DELAY_TIME_BLE_SCAN  600
 #define DELAY_TIME_BLE_START 2000
-#define DELAY_TIME_MAIN_LOOP 3000
 #define DELAY_TIME_BLE_CONN  5000
-#define DELAY_TIME_BLE_DATA  60000
 
 #define DELAY_WAIT_CONNECT   1000
-#define DELAY_WAIT_RESPONSE  5000
+#define DELAY_WAIT_RESPONSE  1000
+#define DELAY_WAIT_MAIN      10000
 
 #define DELAY_LIMIT_WIFI_CLI 15000
 
@@ -67,6 +66,7 @@ String url = "/collect"; //the target URL
 
 uint8_t resultData[ALLOCATE_SIZE_RESULT] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 
+boolean needToChangeStatus = true;
 static boolean doConnect = false;
 static boolean connected = false;
 
@@ -99,14 +99,14 @@ void connectWiFi();
 void initBLE();
 void connectBlueToothDevice();
 int scanDevices();
-int sendData(String dataString);
+int sendData_WIFI(String dataString);
 bool connectToServer();
 void scanBlueToothDevice();
 void handshake_setup_BLE();
-inline void readMeasureResult();
+inline void sendMeasureRequest();
 inline void startMeasurement(uint8_t log_storage_interval);
 inline void stopMeasurement(uint8_t log_storage_interval);
-void readData();
+void sendData_BLE();
 void checkRawData(uint8_t *rawData);
 
 //------------------------------------------------------//
@@ -157,6 +157,9 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, ui
     Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
     Serial.print(" of data length ");
     Serial.println(length);
+
+    //uint8_t *rawData = pBLERemoteCharacteristic->readRawData();
+    checkRawData(pData);
 }
 
 
@@ -177,14 +180,13 @@ void loop() {
     if (doConnect) {
         // check if the BLEClient is connected to the server
         if (connected && pClient->isConnected()) {
-            // read the measured data from device via BLE communication
-            readMeasureResult();
-            delay(DELAY_TIME_BLE_DATA);
+            // read the data from device via BLE communication
+            sendMeasureRequest();
+            delay(DELAY_WAIT_MAIN);
         } else {
-            Serial.println("Bluetooth disconnected!!");
             doConnect = false;
             connected = false;
-            delay(DELAY_TIME_MAIN_LOOP);
+            Serial.println("Bluetooth disconnected!!");
         }
     } else {
         Serial.println("Bluetooth not connected..");
@@ -195,25 +197,18 @@ void loop() {
         delay(DELAY_WAIT_CONNECT);
 
         handshake_setup_BLE(); //do handshake to set up the ble connection
-
-        delay(DELAY_TIME_MAIN_LOOP);
     }
+
+    delay(DELAY_TIME_MAIN_LOOP);
 }
 
 /**
  * Read the measured data from the device.
  */
-inline void readMeasureResult() {
+inline void sendMeasureRequest() {
     Serial.println("\nSend cmd_Result_Return");
-
     characteristic_cmd_control->writeValue(&cmd_RESULT_RETURN, REQ_RESULT_RET_SIZE, true); //send cmd_Result_Return
-
-    delay(DELAY_WAIT_RESPONSE);
-
-    uint8_t *rawData = characteristic_cmd_measurement->readRawData();
-    checkRawData(rawData);
-
-    Serial.println("readMeasureResult() finish");
+    Serial.println("sendMeasureRequest() finish");
 }
 
 void setDateTime(uint8_t *dateTimeBuffer) {
@@ -298,10 +293,10 @@ void iterateReturnedResult(uint8_t *rawData) {
     iterateRawData(rawData, 11);
 
     if (*(rawData + 1) == 11) {
-        if (*(rawData + 2) != 1) {
-            //TODO need to check if this is the correct way of use the cmd_BLE_START_STOP
-            startMeasurement(0x0A); //log interval could be either 0x0A or 0x3C
-            delay(DELAY_TIME_BLE_START);
+        if (*(rawData + 2) != 0x01) {
+            needToChangeStatus = true;
+        } else {
+            //TODO needToChangeStatus = false;
         }
     }
 }
@@ -327,14 +322,25 @@ void checkRawData(uint8_t *rawData) {
 }
 
 /**
- * Reads the raw data.
+ * Sends the raw data.
  */
-void readData() {
-    uint8_t *rawData_log = characteristic_cmd_log->readRawData();
-    uint8_t *rawData_msr = characteristic_cmd_measurement->readRawData();
+void sendData_BLE() {
+    if (needToChangeStatus) {
+        startMeasurement(0x0A); //log interval could be either 0x0A or 0x3C
+    } else {
+        stopMeasurement(0x0A);
+    }
 
-    checkRawData(rawData_log);
-    checkRawData(rawData_msr);
+    delay(DELAY_SEND_RES_RET);
+
+    sendMeasureRequest(); //read the measured data from the device via BLE communication
+
+    delay(DELAY_SEND_RES_RET);
+
+    if (needToChangeStatus) {
+        uint8_t logBuffer[1] = {cmd_LOG_INFO_QUERY};
+        characteristic_cmd_control->writeValue(logBuffer, REQ_LOG_INFOR_SIZE, true); //send cmd_Log_Infor_QUERY
+    }
 }
 
 /**
@@ -359,13 +365,11 @@ void handshake_setup_BLE() {
 
         free(dateTimeBuffer); //free the allocated memory
 
-        readMeasureResult(); //read the measured data from the device via BLE communication
-
-        //TODO characteristic_cmd_log
-        characteristic_cmd_control->writeValue(&cmd_LOG_INFO_QUERY, REQ_LOG_INFOR_SIZE, true); //send cmd_Log_Infor_QUERY
+        sendMeasureRequest(); //read the measured data from the device via BLE communication
 
         delay(DELAY_WAIT_RESPONSE);
-        readData();
+
+        sendData_BLE();
     } else {
         Serial.println("- Not connected!\n");
     }
@@ -570,7 +574,7 @@ bool connectToServer() {
  * @param {queryString} The query string that will be used for url.
  * @return Returns 1 if success. Otherwise, returns 0.
  */
-int sendData(String queryString) {
+int sendData_WIFI(String queryString) {
     WiFiClient client;
 
     Serial.print("\nConnecting to ");
