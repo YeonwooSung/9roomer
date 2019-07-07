@@ -19,3 +19,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// add routers
+app.use('/time', require('./time'));
+app.use('/log', require('./log'));
+
+module.exports.app = app;
