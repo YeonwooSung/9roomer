@@ -1,0 +1,11 @@
+{
+  "name": "tems_arduino_server",
+  "version": "1.0.0",
+  "description": "backend server for tems arduino",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "YeonwooSung",
+  "license": "ISC"
+}

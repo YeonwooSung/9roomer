@@ -1,4 +1,4 @@
-#include <WiFi.h>             // Header File for WiFi
+#include <WiFi.h>
 #include "BLEUtils.h"
 #include "BLEScan.h"
 #include "BLEAdvertisedDevice.h"
@@ -7,7 +7,7 @@
 
 //-----------------Preprocessor-------------------------//
 
-#define PORT_NUMBER_HTTP     80
+#define PORT_NUMBER          8080
 #define SERIAL_PORT_NUM      115200
 
 #define DELAY_SEND_RES_RET   200
@@ -20,7 +20,7 @@
 
 #define DELAY_WAIT_CONNECT   1000
 #define DELAY_WAIT_RESPONSE  1000
-#define DELAY_WAIT_MAIN      10000
+#define DELAY_WAIT_MAIN      300000
 
 #define DELAY_LIMIT_WIFI_CLI 15000
 
@@ -57,16 +57,19 @@ BLEAdvertisedDevice* myDevice; // Bluetooth Advertised device
 
 char *ssid = "YOUR_WIFI_SSID";
 char *pw = "YOUR_WIFI_PW";
-int portNo = PORT_NUMBER_HTTP;
-int scanTime = BLUE_TOOTH_SCAN_TIME;
-char *host = "www.your_host_url";
 
-String hostStr = String(host);
-String url = "/collect"; //the target URL
+int scanTime = BLUE_TOOTH_SCAN_TIME;
+
+char *host = "t.damoa.io";
+
+String str_host = String(host);
+String url_measure = "/logone";
+String url_time = "/time"; //TODO
 
 uint8_t resultData[ALLOCATE_SIZE_RESULT] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 boolean needToChangeStatus = true;
+
 static boolean doConnect = false;
 static boolean connected = false;
 
@@ -89,25 +92,32 @@ static uint8_t cmd_LOG_DATA_SEND = 0xA1;
 static uint8_t cmd_BLE_USER_NAME_SET = 0x30;
 static uint8_t cmd_BLE_USER_NAME_QUERY = 0x31;
 
+static int sensorNum = 999;
+static int serialNum = 0;
+
 //------------------------------------------------------//
 
 
 //-----------------Function prototype-------------------//
 
-void setupWiFi();
-void connectWiFi();
-void initBLE();
+void checkRawData(uint8_t *rawData);
 void connectBlueToothDevice();
-int scanDevices();
-int sendData_WIFI(String dataString);
-bool connectToServer();
-void scanBlueToothDevice();
+void connectWiFi();
 void handshake_setup_BLE();
+void initBLE();
+void scanBlueToothDevice();
+void sendData_BLE();
+void sendToServer(int measuredVal);
+void setupWiFi();
+
+bool connectToServer();
+
+int scanDevices();
+int sendData_WIFI(String queryStringm, String urlStr);
+
 inline void sendMeasureRequest();
 inline void startMeasurement(uint8_t log_storage_interval);
 inline void stopMeasurement(uint8_t log_storage_interval);
-void sendData_BLE();
-void checkRawData(uint8_t *rawData);
 
 //------------------------------------------------------//
 
@@ -125,7 +135,6 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
         Serial.printf("Advertised Device: %s \n", advertisedDevice.toString().c_str());
 
-        //Name: BLE_Gamma:lsj4, Address: d7:6d:da:40:be:6a, appearance: 0
         if (advertisedDevice.getName().compare(TARGET_DEVICE_NAME) == 0) {
             BLEDevice::getScan()->stop();
 
@@ -176,17 +185,31 @@ void setup() {
 
 /* The main loop of the arduino. */
 void loop() {
+    int waitTime = DELAY_WAIT_MAIN;
+
     // check if the BLE scanner found the target device.
     if (doConnect) {
-        // check if the BLEClient is connected to the server
-        if (connected && pClient->isConnected()) {
-            // read the data from device via BLE communication
-            sendMeasureRequest();
-            delay(DELAY_WAIT_MAIN);
+
+        //If WiFi is not connected
+        if (WiFi.status() != WL_CONNECTED) {
+
+            Serial.println("WiFi is not connected!");
+            //TODO what if either ssid or pw is wrong? (or both are wrong)
+             connectWiFi(); //connect WiFi
+
         } else {
-            doConnect = false;
-            connected = false;
-            Serial.println("Bluetooth disconnected!!");
+
+            // check if the BLEClient is connected to the server
+            if (connected && pClient->isConnected()) {
+                // read the data from device via BLE communication
+                sendMeasureRequest();
+            } else {
+                doConnect = false;
+                connected = false;
+                Serial.println("Bluetooth disconnected!!");
+                waitTime = DELAY_TIME_MAIN_LOOP;
+            }
+
         }
     } else {
         Serial.println("Bluetooth not connected..");
@@ -197,9 +220,10 @@ void loop() {
         delay(DELAY_WAIT_CONNECT);
 
         handshake_setup_BLE(); //do handshake to set up the ble connection
+        waitTime = DELAY_TIME_MAIN_LOOP;
     }
 
-    delay(DELAY_TIME_MAIN_LOOP);
+    delay(waitTime);
 }
 
 /**
@@ -299,6 +323,13 @@ void iterateReturnedResult(uint8_t *rawData) {
             //TODO needToChangeStatus = false;
         }
     }
+
+    int val_msb = rawData[7];
+    int val_lsb = rawData[8];
+
+    int measuredVal = (val_msb << 8) + val_lsb;
+    Serial.printf("measured value = %d\n", measuredVal);
+    sendToServer(measuredVal);
 }
 
 
@@ -569,24 +600,41 @@ bool connectToServer() {
 }
 
 /**
+ * Send the measured data via network by using HTTP.
+ *
+ * @param {measuredVal} The measured radioactive ray value.
+ */
+void sendToServer(int measuredVal) {
+    /*
+     * u = sensor number
+     * s = serial number
+     * i = measured value  -  format = {value}G0
+     */
+    String queryString = "f=3&u=" + String(sensorNum) + "&s=" + String(serialNum) + "&i=" + "18G" + String(measuredVal);
+
+    serialNum++;
+    sendData_WIFI(queryString, str_host, url_measure);
+}
+
+/**
  * The function that sends the data via network.
  *
  * @param {queryString} The query string that will be used for url.
  * @return Returns 1 if success. Otherwise, returns 0.
  */
-int sendData_WIFI(String queryString) {
+int sendData_WIFI(String queryString, String hostStr, String urlStr) {
     WiFiClient client;
 
     Serial.print("\nConnecting to ");
     Serial.println(hostStr);
 
     //check if the http client is connected.
-    if (!client.connect(host, PORT_NUMBER_HTTP)) {
+    if (!client.connect(host, PORT_NUMBER)) {
         Serial.print("Connection failed...");
         return 0;
     }
 
-    String header = "GET " + String(url) + "?" + String(queryString) + " HTTP/1.1";
+    String header = "GET " + urlStr + "?" + queryString + " HTTP/1.1";
 
     client.println(header);
     client.println("User-Agent: ESP32_TEMS");
