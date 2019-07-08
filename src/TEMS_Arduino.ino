@@ -96,8 +96,6 @@ static uint8_t cmd_BLE_USER_NAME_QUERY = 0x31;
 static int sensorNum = 999;
 static int serialNum = 0;
 
-static float measuredData = -1;
-
 //------------------------------------------------------//
 
 
@@ -206,16 +204,6 @@ void loop() {
             if (connected && pClient->isConnected()) {
                 // read the data from device via BLE communication
                 sendMeasureRequest();
-
-                delay(DELAY_WAIT_RESPONSE);
-
-                int count = 0;
-
-                // use while loop to retry the data transmission if the data did not send
-                while (notSent || count++ < 3) {
-                    Serial.println("\n- Retry");
-                    sendToServer(measuredData);
-                }
             } else {
                 doConnect = false;
                 connected = false;
@@ -341,8 +329,6 @@ void iterateReturnedResult(uint8_t *rawData) {
     int val_lsb = rawData[8];
 
     float measuredVal = ((val_msb << 8) + val_lsb) / 100;
-    measuredData = measuredVal;
-    notSent = true;
     Serial.printf("measured value = %1.2f\n", measuredVal);
     sendToServer(measuredVal);
 }
@@ -658,8 +644,6 @@ int sendData_WIFI(String queryString, String hostStr, String urlStr) {
     client.println();
 
     Serial.println("Data sending process success!\n"); //to debug
-
-    notSent = false;
 
     return 1;
 }
