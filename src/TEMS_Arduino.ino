@@ -69,6 +69,7 @@ String url_time = "/time"; //TODO
 uint8_t resultData[ALLOCATE_SIZE_RESULT] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 boolean needToChangeStatus = true;
+boolean notSent = false;
 
 static boolean doConnect = false;
 static boolean connected = false;
@@ -94,6 +95,8 @@ static uint8_t cmd_BLE_USER_NAME_QUERY = 0x31;
 
 static int sensorNum = 999;
 static int serialNum = 0;
+
+static float measuredData = -1;
 
 //------------------------------------------------------//
 
@@ -195,7 +198,7 @@ void loop() {
 
             Serial.println("WiFi is not connected!");
             //TODO what if either ssid or pw is wrong? (or both are wrong)
-             connectWiFi(); //connect WiFi
+            setupWiFi();
 
         } else {
 
@@ -203,6 +206,16 @@ void loop() {
             if (connected && pClient->isConnected()) {
                 // read the data from device via BLE communication
                 sendMeasureRequest();
+
+                delay(DELAY_WAIT_RESPONSE);
+
+                int count = 0;
+
+                // use while loop to retry the data transmission if the data did not send
+                while (notSent || count++ < 3) {
+                    Serial.println("\n- Retry");
+                    sendToServer(measuredData);
+                }
             } else {
                 doConnect = false;
                 connected = false;
@@ -327,8 +340,10 @@ void iterateReturnedResult(uint8_t *rawData) {
     int val_msb = rawData[7];
     int val_lsb = rawData[8];
 
-    int measuredVal = (val_msb << 8) + val_lsb;
-    Serial.printf("measured value = %d\n", measuredVal);
+    float measuredVal = ((val_msb << 8) + val_lsb) / 100;
+    measuredData = measuredVal;
+    notSent = true;
+    Serial.printf("measured value = %1.2f\n", measuredVal);
     sendToServer(measuredVal);
 }
 
@@ -604,7 +619,7 @@ bool connectToServer() {
  *
  * @param {measuredVal} The measured radioactive ray value.
  */
-void sendToServer(int measuredVal) {
+void sendToServer(float measuredVal) {
     /*
      * u = sensor number
      * s = serial number
@@ -643,6 +658,8 @@ int sendData_WIFI(String queryString, String hostStr, String urlStr) {
     client.println();
 
     Serial.println("Data sending process success!\n"); //to debug
+
+    notSent = false;
 
     return 1;
 }
