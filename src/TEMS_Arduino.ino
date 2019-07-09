@@ -24,6 +24,8 @@
 
 #define DELAY_LIMIT_WIFI_CLI 15000
 
+#define WIFI_CLIENT_TIMEOUT  5000
+
 #define AP_SSID              "esp32"
 
 #define BLUE_TOOTH_SCAN_TIME 50
@@ -62,14 +64,15 @@ int scanTime = BLUE_TOOTH_SCAN_TIME;
 
 char *host = "t.damoa.io";
 
-String str_host = String(host);
+String hostStr = String(host);
 String url_measure = "/logone";
-String url_time = "/time"; //TODO
+String url_time = "/time";
 
 uint8_t resultData[ALLOCATE_SIZE_RESULT] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 boolean needToChangeStatus = true;
 boolean notSent = false;
+boolean handshake;
 
 static boolean doConnect = false;
 static boolean connected = false;
@@ -98,29 +101,6 @@ static int serialNum = 0;
 
 //------------------------------------------------------//
 
-
-//-----------------Function prototype-------------------//
-
-void checkRawData(uint8_t *rawData);
-void connectBlueToothDevice();
-void connectWiFi();
-void handshake_setup_BLE();
-void initBLE();
-void scanBlueToothDevice();
-void sendData_BLE();
-void sendToServer(int measuredVal);
-void setupWiFi();
-
-bool connectToServer();
-
-int scanDevices();
-int sendData_WIFI(String queryStringm, String urlStr);
-
-inline void sendMeasureRequest();
-inline void startMeasurement(uint8_t log_storage_interval);
-inline void stopMeasurement(uint8_t log_storage_interval);
-
-//------------------------------------------------------//
 
 
 /**
@@ -179,6 +159,7 @@ void setup() {
     initBLE(); // initialise the BLE scanner
     scanBlueToothDevice(); //scan a bluetooth device
     connectBlueToothDevice(); //connect a bluetooth device
+    handshake = false;
     setupWiFi(); //initialise and connect to the WiFi
     handshake_setup_BLE();
 }
@@ -195,13 +176,16 @@ void loop() {
         if (WiFi.status() != WL_CONNECTED) {
 
             Serial.println("WiFi is not connected!");
-            //TODO what if either ssid or pw is wrong? (or both are wrong)
             setupWiFi();
+            waitTime = DELAY_TIME_MAIN_LOOP;
 
         } else {
 
             // check if the BLEClient is connected to the server
             if (connected && pClient->isConnected()) {
+                if (!handshake)
+                    handshake_setup_BLE(); //do handshake to set up the ble connection
+
                 // read the data from device via BLE communication
                 sendMeasureRequest();
             } else {
@@ -237,19 +221,66 @@ inline void sendMeasureRequest() {
 }
 
 void setDateTime(uint8_t *dateTimeBuffer) {
-    //TODO dummy data....
+    //TODO host string
+    char *host_t = "HOST_STR";
+    String host_t_str = String(host_t);
+    WiFiClient client;
+
+    Serial.print("\nConnecting to ");
+    Serial.println(host_t_str);
+
+    //check if the http client is connected.
+    if (!client.connect(host_t, PORT_NUMBER)) {
+        Serial.print("Connection failed...");
+        return;
+    }
+
+    String header = "GET " + url_time + " HTTP/1.1";
+
+    client.println(header);
+    client.println("User-Agent: ESP32_TEMS");
+    client.println("Host: " + host_t_str);
+    client.println("Connection: closed");
+    client.println();
+
+    unsigned long timeout = millis();
+
+    while (client.available() == 0) {
+        if (millis() - timeout > WIFI_CLIENT_TIMEOUT) {
+          Serial.println(">>> Client Timeout !");
+          client.stop();
+          return;
+        }
+    }
+
+    String line;
+    while (client.available()) {
+        line = client.readStringUntil('\r');
+        Serial.print(line);
+    }
+    line.trim();
+
+    uint8_t year = line.substring(0, 4).toInt() - 2000;
+    uint8_t month = line.substring(5, 7).toInt();
+    uint8_t date = line.substring(8, 10).toInt();
+    uint8_t hour = line.substring(11, 13).toInt();
+    uint8_t minute = line.substring(14, 16).toInt();
+    uint8_t second = line.substring(17, 19).toInt();
+
+    Serial.println("\nData sending process success!\n"); //to debug
+
     dateTimeBuffer += 2;
-    *dateTimeBuffer = 0x13;
+    *dateTimeBuffer = year;
     dateTimeBuffer++;
-    *dateTimeBuffer = 7;
+    *dateTimeBuffer = month;
     dateTimeBuffer++;
-    *dateTimeBuffer = 4;
+    *dateTimeBuffer = date;
     dateTimeBuffer++;
-    *dateTimeBuffer = 1;
+    *dateTimeBuffer = hour;
     dateTimeBuffer++;
-    *dateTimeBuffer = 1;
+    *dateTimeBuffer = minute;
     dateTimeBuffer++;
-    *dateTimeBuffer = 1;
+    *dateTimeBuffer = second;
 }
 
 /**
@@ -328,7 +359,7 @@ void iterateReturnedResult(uint8_t *rawData) {
     int val_msb = rawData[7];
     int val_lsb = rawData[8];
 
-    float measuredVal = ((val_msb << 8) + val_lsb) / 100;
+    float measuredVal = ((float) (val_msb << 8) + val_lsb) / 100.0;
     Serial.printf("measured value = %1.2f\n", measuredVal);
     sendToServer(measuredVal);
 }
@@ -381,6 +412,11 @@ void sendData_BLE() {
 void handshake_setup_BLE() {
     Serial.println("\n\nHandshake start\n");
 
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected...\nTerminate handshake");
+        return;
+    }
+
     if (pClient->isConnected()) {
         //buffer for the date time data
         Serial.println("\nSend date time");
@@ -402,6 +438,8 @@ void handshake_setup_BLE() {
         delay(DELAY_WAIT_RESPONSE);
 
         sendData_BLE();
+
+        handshake = true;
     } else {
         Serial.println("- Not connected!\n");
     }
@@ -601,11 +639,12 @@ bool connectToServer() {
 }
 
 /**
- * Send the measured data via network by using HTTP.
+ * The function that sends the data via network.
  *
  * @param {measuredVal} The measured radioactive ray value.
+ * @return Returns 1 if success. Otherwise, returns 0.
  */
-void sendToServer(float measuredVal) {
+int sendToServer(float measuredVal) {
     /*
      * u = sensor number
      * s = serial number
@@ -614,16 +653,7 @@ void sendToServer(float measuredVal) {
     String queryString = "f=3&u=" + String(sensorNum) + "&s=" + String(serialNum) + "&i=" + "18G" + String(measuredVal);
 
     serialNum++;
-    sendData_WIFI(queryString, str_host, url_measure);
-}
 
-/**
- * The function that sends the data via network.
- *
- * @param {queryString} The query string that will be used for url.
- * @return Returns 1 if success. Otherwise, returns 0.
- */
-int sendData_WIFI(String queryString, String hostStr, String urlStr) {
     WiFiClient client;
 
     Serial.print("\nConnecting to ");
@@ -635,7 +665,7 @@ int sendData_WIFI(String queryString, String hostStr, String urlStr) {
         return 0;
     }
 
-    String header = "GET " + urlStr + "?" + queryString + " HTTP/1.1";
+    String header = "GET " + url_measure + "?" + queryString + " HTTP/1.1";
 
     client.println(header);
     client.println("User-Agent: ESP32_TEMS");
