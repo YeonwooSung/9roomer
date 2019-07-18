@@ -1,3 +1,4 @@
+#include <DFRobot_SHT20.h>
 #include <WiFi.h>
 #include "BLEUtils.h"
 #include "BLEScan.h"
@@ -17,6 +18,8 @@
 #define DELAY_TIME_BLE_SCAN  600
 #define DELAY_TIME_BLE_START 2000
 #define DELAY_TIME_BLE_CONN  5000
+
+#define DELAY_INIT_SHT20     200
 
 #define DELAY_WAIT_CONNECT   1000
 #define DELAY_WAIT_RESPONSE  1000
@@ -62,6 +65,10 @@ char *pw = "YOUR_WIFI_PW";
 
 int scanTime = BLUE_TOOTH_SCAN_TIME;
 
+const int GEIGER_DEV_NUM = 18;
+const int TEMP_DEV_NUM = 19;
+const int HUMI_DEV_NUM = 20;
+
 char *host = "t.damoa.io";
 
 String hostStr = String(host);
@@ -98,6 +105,8 @@ static uint8_t cmd_BLE_USER_NAME_QUERY = 0x31;
 
 static int sensorNum = 999;
 static int serialNum = 0;
+
+static DFRobot_SHT20 sht20;
 
 //------------------------------------------------------//
 
@@ -162,6 +171,11 @@ void setup() {
     handshake = false;
     setupWiFi(); //initialise and connect to the WiFi
     handshake_setup_BLE();
+
+    //set up DFRobot_SHT20
+    sht20.initSHT20();
+    delay(DELAY_INIT_SHT20);
+    sht20.checkSHT20();
 }
 
 
@@ -185,6 +199,16 @@ void loop() {
             if (connected && pClient->isConnected()) {
                 if (!handshake)
                     handshake_setup_BLE(); //do handshake to set up the ble connection
+
+                //TODO need to test
+                float humd = sht20.readHumidity();
+                Serial.print("humidity: ");
+                Serial.println(humd);
+                validate_sht20(humd, HUMI_DEV_NUM);
+                float temp = sht20.readTemperature();
+                Serial.print("temperature: ");
+                Serial.println(temp);
+                validate_sht20(temp, TEMP_DEV_NUM);
 
                 // read the data from device via BLE communication
                 sendMeasureRequest();
@@ -211,6 +235,20 @@ void loop() {
     delay(waitTime);
 }
 
+void validate_sht20(float val, int deviceNum) {
+    int i = (int) val;
+    switch (i) {
+        case 998:
+            Serial.println("Error::I2C_Time_Out - Sensor not detected");
+            break;
+        case 999:
+            Serial.println("Error::BAD_CRC - CRC bad");
+            break;
+        default:
+            sendToServer(val, deviceNum);
+    }
+}
+
 /**
  * Read the measured data from the device.
  */
@@ -222,7 +260,7 @@ inline void sendMeasureRequest() {
 
 void setDateTime(uint8_t *dateTimeBuffer) {
     //TODO host string
-    char *host_t = "HOST_STR";
+    char *host_t = "172.30.1.26";
     String host_t_str = String(host_t);
     WiFiClient client;
 
@@ -361,7 +399,7 @@ void iterateReturnedResult(uint8_t *rawData) {
 
     float measuredVal = ((float) (val_msb << 8) + val_lsb) / 100.0;
     Serial.printf("measured value = %1.2f\n", measuredVal);
-    sendToServer(measuredVal);
+    sendToServer(measuredVal, GEIGER_DEV_NUM);
 }
 
 
@@ -642,15 +680,16 @@ bool connectToServer() {
  * The function that sends the data via network.
  *
  * @param {measuredVal} The measured radioactive ray value.
+ * @param {deviceNum} The device number that is used in the url query.
  * @return Returns 1 if success. Otherwise, returns 0.
  */
-int sendToServer(float measuredVal) {
+int sendToServer(float measuredVal, int deviceNum) {
     /*
      * u = sensor number
      * s = serial number
      * i = measured value  -  format = {value}G0
      */
-    String queryString = "f=3&u=" + String(sensorNum) + "&s=" + String(serialNum) + "&i=" + "18G" + String(measuredVal);
+    String queryString = "f=3&u=" + String(sensorNum) + "&s=" + String(serialNum) + "&i=" + String(deviceNum) + "G" + String(measuredVal);
 
     serialNum++;
 
