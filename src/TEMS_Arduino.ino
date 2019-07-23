@@ -5,7 +5,6 @@
 #include "BLEAdvertisedDevice.h"
 #include "BLEDevice.h"
 #include "BLEServer.h"
-#include <BLE2902.h>
 
 
 //-----------------Preprocessor-------------------------//
@@ -43,8 +42,10 @@
 #define CHAR_UUID_MEAS       "00001525-1212-efde-1523-785feabcd123"
 #define CHAR_UUID_LOG        "00001526-1212-efde-1523-785feabcd123"
 
-#define SERVER_SERVICE_UUID  "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define SERVER_CHAR_UUID     "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define WIFI_SERVICE_UUID    "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define WIFI_PW_SERVICE_UUID "4fafc202-1fb5-459e-8fcc-c5c9c331914b"
+#define WIFI_NAME_CHAR_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define WIFI_PW_CHAR_UUID    "bed5483e-36e1-4688-b7f5-ea07361b26a8"
 
 #define REQ_RESULT_RET_SIZE  1
 #define REQ_LOG_INFOR_SIZE   1
@@ -67,8 +68,10 @@ BLEClient* pClient;            // BluetoothClient
 BLEAdvertisedDevice* myDevice; // Bluetooth Advertised device
 
 static BLEServer *pServer;
-static BLEService *pServerService;
-static BLECharacteristic *pCharacteristic;
+static BLEService *pServerService_wifi;
+static BLEService *pServerService_pw;
+static BLECharacteristic *pCharacteristic_wifi;
+static BLECharacteristic *pCharacteristic_pw;
 static BLEAdvertising *pAdvertising;
 
 char *ssid = "YOUR_WIFI_SSID";
@@ -124,9 +127,28 @@ static DFRobot_SHT20 sht20;
 
 
 /**
- * The aim of this class is to implement a custom event listener for the ble characteristic.
+ * The aim of this class is to implement a custom event listener to get the wifi password.
  */
-class MyCallbacks: public BLECharacteristicCallbacks {
+class WiFiPasswordCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+
+        if (value.length() > 0) {
+            Serial.println("*********");
+            Serial.print("New value: ");
+            for (int i = 0; i < value.length(); i++)
+                Serial.print(value[i]);
+
+            Serial.println();
+            Serial.println("*********");
+        }
+    }
+};
+
+/**
+ * The aim of this class is to implement a custom event listener to get the wifi name.
+ */
+class WiFiNameCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         std::string value = pCharacteristic->getValue();
 
@@ -292,6 +314,7 @@ void loop() {
 
     delay(waitTime);
 }
+
 
 void validate_sht20(float val, int deviceNum) {
     int i = (int) val;
@@ -549,19 +572,30 @@ void initBLEServer() {
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
-    pServerService = pServer->createService(SERVER_SERVICE_UUID);
-    pCharacteristic = pServerService->createCharacteristic(
-                      SERVER_CHAR_UUID,
+    pServerService_wifi = pServer->createService(WIFI_SERVICE_UUID);
+    pServerService_pw = pServer->createService(WIFI_PW_SERVICE_UUID);
+
+    pCharacteristic_wifi = pServerService_wifi->createCharacteristic(
+                      WIFI_NAME_CHAR_UUID,
+                      BLECharacteristic::PROPERTY_READ   |
+                      BLECharacteristic::PROPERTY_WRITE  |
+                      BLECharacteristic::PROPERTY_NOTIFY |
+                      BLECharacteristic::PROPERTY_INDICATE
+                    );
+    pCharacteristic_pw = pServerService_pw->createCharacteristic(
+                      WIFI_PW_CHAR_UUID,
                       BLECharacteristic::PROPERTY_READ   |
                       BLECharacteristic::PROPERTY_WRITE  |
                       BLECharacteristic::PROPERTY_NOTIFY |
                       BLECharacteristic::PROPERTY_INDICATE
                     );
 
-    pCharacteristic->addDescriptor(new BLE2902());
-    pCharacteristic->setCallbacks(new MyCallbacks());
+    pCharacteristic_wifi->setCallbacks(new WiFiNameCallbacks());
+    pCharacteristic_pw->setCallbacks(new WiFiPasswordCallbacks());
 
-    pServerService->start();
+    pServerService_wifi->start();
+    pServerService_pw->start();
+
     pAdvertising = pServer->getAdvertising();
     pAdvertising->start();
     Serial.println("Local BLE server created!!\n");
