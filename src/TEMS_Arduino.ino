@@ -4,6 +4,8 @@
 #include "BLEScan.h"
 #include "BLEAdvertisedDevice.h"
 #include "BLEDevice.h"
+#include "BLEServer.h"
+#include <BLE2902.h>
 
 
 //-----------------Preprocessor-------------------------//
@@ -17,6 +19,7 @@
 #define DELAY_TIME_MAIN_LOOP 500
 #define DELAY_TIME_BLE_SCAN  600
 #define DELAY_TIME_BLE_START 2000
+#define DELAY_TIME_BLE_AD    2000
 #define DELAY_TIME_BLE_CONN  5000
 
 #define DELAY_INIT_SHT20     200
@@ -40,6 +43,9 @@
 #define CHAR_UUID_MEAS       "00001525-1212-efde-1523-785feabcd123"
 #define CHAR_UUID_LOG        "00001526-1212-efde-1523-785feabcd123"
 
+#define SERVER_SERVICE_UUID  "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define SERVER_CHAR_UUID     "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
 #define REQ_RESULT_RET_SIZE  1
 #define REQ_LOG_INFOR_SIZE   1
 #define REQ_LOG_DATA_SIZE    1
@@ -59,6 +65,11 @@
 BLEScan* pBLEScan;             // Bluetooth Scanner
 BLEClient* pClient;            // BluetoothClient
 BLEAdvertisedDevice* myDevice; // Bluetooth Advertised device
+
+static BLEServer *pServer;
+static BLEService *pServerService;
+static BLECharacteristic *pCharacteristic;
+static BLEAdvertising *pAdvertising;
 
 char *ssid = "YOUR_WIFI_SSID";
 char *pw = "YOUR_WIFI_PW";
@@ -83,6 +94,7 @@ boolean handshake;
 
 static boolean doConnect = false;
 static boolean connected = false;
+static boolean shouldStartAdvertise;
 
 static BLEUUID WP_CTL_UUID(CHAR_UUID_CTL);
 static BLEUUID WP_MEAS_UUID(CHAR_UUID_MEAS);
@@ -110,6 +122,39 @@ static DFRobot_SHT20 sht20;
 
 //------------------------------------------------------//
 
+
+/**
+ * The aim of this class is to implement a custom event listener for the ble characteristic.
+ */
+class MyCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+
+        if (value.length() > 0) {
+            Serial.println("*********");
+            Serial.print("New value: ");
+            for (int i = 0; i < value.length(); i++)
+                Serial.print(value[i]);
+
+            Serial.println();
+            Serial.println("*********");
+        }
+    }
+};
+
+/**
+ * The aim of this class is to implement a custom event listener for the local BLE server.
+ */
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+        Serial.println("- MyServerCallbacks::onConnect() executed");
+    };
+
+    void onDisconnect(BLEServer* pServer) {
+        shouldStartAdvertise = false;
+        Serial.println("- MyServerCallbacks::onDisconnect() executed");
+    }
+};
 
 
 /**
@@ -157,7 +202,6 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, ui
     Serial.print(" of data length ");
     Serial.println(length);
 
-    //uint8_t *rawData = pBLERemoteCharacteristic->readRawData();
     checkRawData(pData);
 }
 
@@ -166,6 +210,7 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, ui
 void setup() {
     Serial.begin(SERIAL_PORT_NUM); //Start Serial monitor in 9600
     initBLE(); // initialise the BLE scanner
+    shouldStartAdvertise = false;
     scanBlueToothDevice(); //scan a bluetooth device
     connectBlueToothDevice(); //connect a bluetooth device
     handshake = false;
@@ -230,6 +275,19 @@ void loop() {
 
         handshake_setup_BLE(); //do handshake to set up the ble connection
         waitTime = DELAY_TIME_MAIN_LOOP;
+    }
+
+    while (waitTime > DELAY_TIME_BLE_AD) {
+        if (shouldStartAdvertise) {
+            pServer->startAdvertising(); // restart advertising
+            Serial.println("DEBUGGING (main loop) - start advertising");
+            shouldStartAdvertise = false;
+        }
+
+        //TODO ????????
+
+        waitTime -= DELAY_TIME_BLE_AD;
+        delay(DELAY_TIME_BLE_AD);
     }
 
     delay(waitTime);
@@ -483,6 +541,32 @@ void handshake_setup_BLE() {
     }
 }
 
+
+/**
+ * Initialise the BLE server.
+ */
+void initBLEServer() {
+    pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
+
+    pServerService = pServer->createService(SERVER_SERVICE_UUID);
+    pCharacteristic = pServerService->createCharacteristic(
+                      SERVER_CHAR_UUID,
+                      BLECharacteristic::PROPERTY_READ   |
+                      BLECharacteristic::PROPERTY_WRITE  |
+                      BLECharacteristic::PROPERTY_NOTIFY |
+                      BLECharacteristic::PROPERTY_INDICATE
+                    );
+
+    pCharacteristic->addDescriptor(new BLE2902());
+    pCharacteristic->setCallbacks(new MyCallbacks());
+
+    pServerService->start();
+    pAdvertising = pServer->getAdvertising();
+    pAdvertising->start();
+    Serial.println("Local BLE server created!!\n");
+}
+
 /**
  * Initialise the BLE settings so that the ESP32 device could scan the BLE advertising devices.
  */
@@ -501,6 +585,8 @@ void initBLE() {
     Serial.println(" - Client created\n\n");
 
     pClient->setClientCallbacks(new MyClientCallback());
+
+    initBLEServer(); //init the ble server
 }
 
 /**
