@@ -92,7 +92,6 @@ String url_time = "/time";
 uint8_t resultData[ALLOCATE_SIZE_RESULT] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 boolean needToChangeStatus = true;
-boolean notSent = false;
 boolean handshake;
 
 static boolean doConnect = false;
@@ -119,7 +118,8 @@ static uint8_t cmd_BLE_USER_NAME_SET = 0x30;
 static uint8_t cmd_BLE_USER_NAME_QUERY = 0x31;
 
 static int sensorNum = 999;
-static int serialNum = 0;
+static int serialNum_g = 0;
+static int serialNum_th = 0;
 
 static DFRobot_SHT20 sht20;
 
@@ -149,7 +149,7 @@ int scanDevices();
 void checkCharacteristic(BLERemoteCharacteristic* pRemoteCharacteristic);
 void getCharacteristicFromService(BLERemoteService* pRemoteService);
 bool connectToServer();
-int sendToServer(float measuredVal, int deviceNum);
+int sendToServer(float measuredVal, int deviceNum, int serialNum);
 
 //------------------------------------------------------//
 
@@ -299,15 +299,17 @@ void loop() {
                 if (!handshake)
                     handshake_setup_BLE(); //do handshake to set up the ble connection
 
-                //TODO need to test
                 float humd = sht20.readHumidity();
                 Serial.print("humidity: ");
                 Serial.println(humd);
                 validate_sht20(humd, HUMI_DEV_NUM);
+
                 float temp = sht20.readTemperature();
                 Serial.print("temperature: ");
                 Serial.println(temp);
                 validate_sht20(temp, TEMP_DEV_NUM);
+
+                serialNum_th += 1;
 
                 // read the data from device via BLE communication
                 sendMeasureRequest();
@@ -358,7 +360,7 @@ void validate_sht20(float val, int deviceNum) {
             Serial.println("Error::BAD_CRC - CRC bad");
             break;
         default:
-            sendToServer(val, deviceNum);
+            sendToServer(val, deviceNum, serialNum_th);
     }
 }
 
@@ -512,7 +514,9 @@ void iterateReturnedResult(uint8_t *rawData) {
 
     float measuredVal = ((float) (val_msb << 8) + val_lsb) / 100.0;
     Serial.printf("measured value = %1.2f\n", measuredVal);
-    sendToServer(measuredVal, GEIGER_DEV_NUM);
+    sendToServer(measuredVal, GEIGER_DEV_NUM, serialNum_g);
+
+    serialNum_g += 1;
 }
 
 
@@ -835,15 +839,13 @@ bool connectToServer() {
  * @param {deviceNum} The device number that is used in the url query.
  * @return Returns 1 if success. Otherwise, returns 0.
  */
-int sendToServer(float measuredVal, int deviceNum) {
+int sendToServer(float measuredVal, int deviceNum, int serialNum) {
     /*
      * u = sensor number
      * s = serial number
      * i = measured value  -  format = {value}G0
      */
     String queryString = "f=3&u=" + String(sensorNum) + "&s=" + String(serialNum) + "&i=" + String(deviceNum) + "G" + String(measuredVal);
-
-    serialNum++;
 
     WiFiClient client;
 
