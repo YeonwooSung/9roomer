@@ -74,8 +74,8 @@ static BLECharacteristic *pCharacteristic_wifi;
 static BLECharacteristic *pCharacteristic_pw;
 static BLEAdvertising *pAdvertising;
 
-char *ssid = "YOUR_WIFI_SSID";
-char *pw = "YOUR_WIFI_PW";
+const char *ssid = "YOUR_WIFI_SSID";
+const char *pw = "YOUR_WIFI_PW";
 
 int scanTime = BLUE_TOOTH_SCAN_TIME;
 
@@ -125,6 +125,34 @@ static DFRobot_SHT20 sht20;
 
 //------------------------------------------------------//
 
+//--------------Function prototype----------------------//
+
+static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData,size_t length, bool isNotify);
+void validate_sht20(float val, int deviceNum);
+inline void sendMeasureRequest();
+void setDateTime(uint8_t *dateTimeBuffer);
+void changeMeasurementStatus(uint8_t new_stat, uint8_t log_storage_interval);
+inline void startMeasurement(uint8_t log_storage_interval);
+inline void stopMeasurement(uint8_t log_storage_interval);
+inline void iterateRawData(uint8_t *rawData, int len);
+void iterateLogInfo(uint8_t *rawData);
+void iterateReturnedResult(uint8_t *rawData);
+void checkRawData(uint8_t *rawData);
+void sendData_BLE();
+void handshake_setup_BLE();
+void initBLEServer();
+void setupWiFi();
+void connectWiFi();
+void connectBlueToothDevice();
+void scanBlueToothDevice();
+int scanDevices();
+void checkCharacteristic(BLERemoteCharacteristic* pRemoteCharacteristic);
+void getCharacteristicFromService(BLERemoteService* pRemoteService);
+bool connectToServer();
+int sendToServer(float measuredVal, int deviceNum);
+
+//------------------------------------------------------//
+
 
 /**
  * The aim of this class is to implement a custom event listener to get the wifi password.
@@ -132,6 +160,7 @@ static DFRobot_SHT20 sht20;
 class WiFiPasswordCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         std::string value = pCharacteristic->getValue();
+        pw = value.c_str();
 
         if (value.length() > 0) {
             Serial.println("*********");
@@ -142,6 +171,8 @@ class WiFiPasswordCallbacks: public BLECharacteristicCallbacks {
             Serial.println();
             Serial.println("*********");
         }
+
+        setupWiFi();
     }
 };
 
@@ -151,6 +182,7 @@ class WiFiPasswordCallbacks: public BLECharacteristicCallbacks {
 class WiFiNameCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         std::string value = pCharacteristic->getValue();
+        ssid = value.c_str();
 
         if (value.length() > 0) {
             Serial.println("*********");
