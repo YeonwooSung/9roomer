@@ -7,7 +7,7 @@
 #include "BLEServer.h"
 
 
-//-----------------Preprocessor-------------------------//
+//-----------------Preprocessors------------------------//
 
 #define PORT_NUMBER          8080
 #define SERIAL_PORT_NUM      115200
@@ -47,6 +47,9 @@
 #define WIFI_NAME_CHAR_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define WIFI_PW_CHAR_UUID    "bed5483e-36e1-4688-b7f5-ea07361b26a8"
 
+#define D_NAME_SERVICE_UUID  "4fafc203-1fb5-459e-8fcc-c5c9c331914b"
+#define D_NAME_CHAR_UUID     "bec5483e-36e1-4688-b7f5-ea07361b26a8"
+
 #define REQ_RESULT_RET_SIZE  1
 #define REQ_LOG_INFOR_SIZE   1
 #define REQ_LOG_DATA_SIZE    1
@@ -61,11 +64,13 @@
 //------------------------------------------------------//
 
 
-//-----------------Global variable----------------------//
+//-----------------Global variables---------------------//
 
 BLEScan* pBLEScan;             // Bluetooth Scanner
 BLEClient* pClient;            // BluetoothClient
 BLEAdvertisedDevice* myDevice; // Bluetooth Advertised device
+
+static std::string targetName;
 
 static BLEServer *pServer;
 static BLEService *pServerService_wifi;
@@ -73,6 +78,9 @@ static BLEService *pServerService_pw;
 static BLECharacteristic *pCharacteristic_wifi;
 static BLECharacteristic *pCharacteristic_pw;
 static BLEAdvertising *pAdvertising;
+
+static BLEService *pServerService_deviceName;
+static BLECharacteristic *pCharacteristic_deviceName;
 
 const char *ssid = "YOUR_WIFI_SSID";
 const char *pw = "YOUR_WIFI_PW";
@@ -83,20 +91,20 @@ const int GEIGER_DEV_NUM = 18;
 const int TEMP_DEV_NUM = 19;
 const int HUMI_DEV_NUM = 20;
 
-char *host = "t.damoa.io";
-
+char *host = "ec2-15-164-218-172.ap-northeast-2.compute.amazonaws.com";
 String hostStr = String(host);
-String url_measure = "/logone";
+String url_g = "/logoneg";
+String url_th = "/logoneth";
 String url_time = "/time";
 
 uint8_t resultData[ALLOCATE_SIZE_RESULT] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 
-boolean needToChangeStatus = true;
-boolean handshake;
+bool needToChangeStatus = true;
+bool handshake;
 
-static boolean doConnect = false;
-static boolean connected = false;
-static boolean shouldStartAdvertise;
+static bool doConnect = false;
+static bool connected = false;
+static bool shouldStartAdvertise;
 
 static BLEUUID WP_CTL_UUID(CHAR_UUID_CTL);
 static BLEUUID WP_MEAS_UUID(CHAR_UUID_MEAS);
@@ -125,10 +133,9 @@ static DFRobot_SHT20 sht20;
 
 //------------------------------------------------------//
 
-//--------------Function prototype----------------------//
+//--------------Function prototypes---------------------//
 
 static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData,size_t length, bool isNotify);
-void validate_sht20(float val, int deviceNum);
 inline void sendMeasureRequest();
 void setDateTime(uint8_t *dateTimeBuffer);
 void changeMeasurementStatus(uint8_t new_stat, uint8_t log_storage_interval);
@@ -149,7 +156,10 @@ int scanDevices();
 void checkCharacteristic(BLERemoteCharacteristic* pRemoteCharacteristic);
 void getCharacteristicFromService(BLERemoteService* pRemoteService);
 bool connectToServer();
-int sendToServer(float measuredVal, int deviceNum, int serialNum);
+bool validate_sht20(float val);
+int sendViaHTTP(String queryString, String url);
+int sendGeiger(float measuredVal, int deviceNum);
+int sendTemperatureAndHumidity(float temperature, float humidity, int deviceNum);
 
 //------------------------------------------------------//
 
@@ -160,9 +170,9 @@ int sendToServer(float measuredVal, int deviceNum, int serialNum);
 class WiFiPasswordCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         std::string value = pCharacteristic->getValue();
-        pw = value.c_str();
 
         if (value.length() > 0) {
+            targetName = value;
             Serial.println("*********");
             Serial.print("New value: ");
             for (int i = 0; i < value.length(); i++)
@@ -182,16 +192,34 @@ class WiFiPasswordCallbacks: public BLECharacteristicCallbacks {
 class WiFiNameCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         std::string value = pCharacteristic->getValue();
-        ssid = value.c_str();
 
         if (value.length() > 0) {
+            ssid = value.c_str();
             Serial.println("*********");
-            Serial.print("New value: ");
+            Serial.print("Received Wi-Fi ssid: ");
             for (int i = 0; i < value.length(); i++)
                 Serial.print(value[i]);
 
-            Serial.println();
+            Serial.println("\n*********");
+        }
+    }
+};
+
+/**
+ * The ble server's event listener that helps the esp32 to store the target device name.
+ */
+class DeviceNameCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+
+        if (value.length() > 0) {
+            ssid = value.c_str();
             Serial.println("*********");
+            Serial.print("New BLE device name: ");
+            for (int i = 0; i < value.length(); i++)
+                Serial.print(value[i]);
+
+            Serial.println("\n*********");
         }
     }
 };
@@ -224,7 +252,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
         Serial.printf("Advertised Device: %s \n", advertisedDevice.toString().c_str());
 
-        if (advertisedDevice.getName().compare(TARGET_DEVICE_NAME) == 0) {
+        if (advertisedDevice.getName().compare(targetName) == 0) {
             BLEDevice::getScan()->stop();
 
             // free the pre-allocated memory (if exist), and create new BLEAdvertisedDevice instance
@@ -237,6 +265,9 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     }
 };
 
+/**
+ * BLE client instance's callback that helps the ESP32 to check if the ESP32 is connected to the BLE server that we are looking for.
+ */
 class MyClientCallback : public BLEClientCallbacks {
     void onConnect(BLEClient* pclient) {
         connected = true;
@@ -256,12 +287,16 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, ui
     Serial.print(" of data length ");
     Serial.println(length);
 
+    delay(DELAY_WAIT_RESPONSE);
+
     checkRawData(pData);
 }
 
 
 /* Initialise things before starting the main loop */
 void setup() {
+    targetName = TARGET_DEVICE_NAME;
+
     Serial.begin(SERIAL_PORT_NUM); //Start Serial monitor in 9600
     initBLE(); // initialise the BLE scanner
     shouldStartAdvertise = false;
@@ -302,12 +337,17 @@ void loop() {
                 float humd = sht20.readHumidity();
                 Serial.print("humidity: ");
                 Serial.println(humd);
-                validate_sht20(humd, HUMI_DEV_NUM);
+                bool humidityIsValid = validate_sht20(humd);
 
                 float temp = sht20.readTemperature();
                 Serial.print("temperature: ");
                 Serial.println(temp);
-                validate_sht20(temp, TEMP_DEV_NUM);
+                bool temperatureIsValid = validate_sht20(temp);
+
+                // send tempearture and humidity only when both humidity value and temperature value are valid (non error).
+                if (humidityIsValid && temperatureIsValid) {
+                    sendTemperatureAndHumidity(temp, humd, GEIGER_DEV_NUM);
+                }
 
                 serialNum_th += 1;
 
@@ -350,8 +390,9 @@ void loop() {
 }
 
 
-void validate_sht20(float val, int deviceNum) {
+bool validate_sht20(float val) {
     int i = (int) val;
+    bool isValid = false;
     switch (i) {
         case 998:
             Serial.println("Error::I2C_Time_Out - Sensor not detected");
@@ -360,8 +401,10 @@ void validate_sht20(float val, int deviceNum) {
             Serial.println("Error::BAD_CRC - CRC bad");
             break;
         default:
-            sendToServer(val, deviceNum, serialNum_th);
+            isValid = true;
     }
+
+    return isValid;
 }
 
 /**
@@ -373,17 +416,17 @@ inline void sendMeasureRequest() {
     Serial.println("sendMeasureRequest() finish");
 }
 
+/**
+ * This function helps the ESP32 to set the date time by getting current date time, and use the received data to set the current date time of the geiger device.
+ */
 void setDateTime(uint8_t *dateTimeBuffer) {
-    //TODO host string
-    char *host_t = "172.30.1.26";
-    String host_t_str = String(host_t);
     WiFiClient client;
 
     Serial.print("\nConnecting to ");
-    Serial.println(host_t_str);
+    Serial.println(hostStr);
 
     //check if the http client is connected.
-    if (!client.connect(host_t, PORT_NUMBER)) {
+    if (!client.connect(host, PORT_NUMBER)) {
         Serial.print("Connection failed...");
         return;
     }
@@ -392,12 +435,13 @@ void setDateTime(uint8_t *dateTimeBuffer) {
 
     client.println(header);
     client.println("User-Agent: ESP32_TEMS");
-    client.println("Host: " + host_t_str);
+    client.println("Host: " + hostStr);
     client.println("Connection: closed");
     client.println();
 
     unsigned long timeout = millis();
 
+    // use the while loop to wait until the server sends the HTTP response
     while (client.available() == 0) {
         if (millis() - timeout > WIFI_CLIENT_TIMEOUT) {
           Serial.println(">>> Client Timeout !");
@@ -406,7 +450,10 @@ void setDateTime(uint8_t *dateTimeBuffer) {
         }
     }
 
+
     String line;
+
+    // use the while loop to read HTTP response
     while (client.available()) {
         line = client.readStringUntil('\r');
         Serial.print(line);
@@ -514,7 +561,7 @@ void iterateReturnedResult(uint8_t *rawData) {
 
     float measuredVal = ((float) (val_msb << 8) + val_lsb) / 100.0;
     Serial.printf("measured value = %1.2f\n", measuredVal);
-    sendToServer(measuredVal, GEIGER_DEV_NUM, serialNum_g);
+    sendGeiger(measuredVal, GEIGER_DEV_NUM);
 
     serialNum_g += 1;
 }
@@ -610,6 +657,7 @@ void initBLEServer() {
 
     pServerService_wifi = pServer->createService(WIFI_SERVICE_UUID);
     pServerService_pw = pServer->createService(WIFI_PW_SERVICE_UUID);
+    pServerService_deviceName = pServer->createService(D_NAME_SERVICE_UUID);
 
     pCharacteristic_wifi = pServerService_wifi->createCharacteristic(
                       WIFI_NAME_CHAR_UUID,
@@ -625,12 +673,22 @@ void initBLEServer() {
                       BLECharacteristic::PROPERTY_NOTIFY |
                       BLECharacteristic::PROPERTY_INDICATE
                     );
+    pCharacteristic_deviceName = pServerService_pw->createCharacteristic(
+                      D_NAME_CHAR_UUID,
+                      BLECharacteristic::PROPERTY_READ   |
+                      BLECharacteristic::PROPERTY_WRITE  |
+                      BLECharacteristic::PROPERTY_NOTIFY |
+                      BLECharacteristic::PROPERTY_INDICATE
+                    );
 
     pCharacteristic_wifi->setCallbacks(new WiFiNameCallbacks());
     pCharacteristic_pw->setCallbacks(new WiFiPasswordCallbacks());
 
+    pCharacteristic_deviceName->setCallbacks(new DeviceNameCallbacks());
+
     pServerService_wifi->start();
     pServerService_pw->start();
+    pServerService_deviceName->start();
 
     pAdvertising = pServer->getAdvertising();
     pAdvertising->start();
@@ -833,20 +891,9 @@ bool connectToServer() {
 }
 
 /**
- * The function that sends the data via network.
- *
- * @param {measuredVal} The measured radioactive ray value.
- * @param {deviceNum} The device number that is used in the url query.
- * @return Returns 1 if success. Otherwise, returns 0.
+ * Send the collected data to the TEMS server via HTTP.
  */
-int sendToServer(float measuredVal, int deviceNum, int serialNum) {
-    /*
-     * u = sensor number
-     * s = serial number
-     * i = measured value  -  format = {value}G0
-     */
-    String queryString = "f=3&u=" + String(sensorNum) + "&s=" + String(serialNum) + "&i=" + String(deviceNum) + "G" + String(measuredVal);
-
+int sendViaHTTP(String queryString, String url) {
     WiFiClient client;
 
     Serial.print("\nConnecting to ");
@@ -858,15 +905,31 @@ int sendToServer(float measuredVal, int deviceNum, int serialNum) {
         return 0;
     }
 
-    String header = "GET " + url_measure + "?" + queryString + " HTTP/1.1";
+    String header = "GET " + url + "?" + queryString + " HTTP/1.1";
 
     client.println(header);
-    client.println("User-Agent: ESP32_TEMS");
+    client.println("User-Agent: groomer");
     client.println("Host: " + hostStr);
     client.println("Connection: closed");
     client.println();
 
     Serial.println("Data sending process success!\n"); //to debug
+}
 
-    return 1;
+/**
+ * Send the collected geiger data to the server
+ */
+int sendGeiger(float measuredVal, int deviceNum) {
+    String queryString = "s=" + String(serialNum_g) + "&g=" + String(measuredVal) + "&u=" + String(deviceNum);
+    Serial.println(queryString);
+    return sendViaHTTP(queryString, url_g);
+}
+
+/**
+ * Send the temperature data and humidity data to the server.
+ */
+int sendTemperatureAndHumidity(float temperature, float humidity, int deviceNum) {
+    String queryString = "s=" + String(serialNum_th) + "&t=" + String(temperature) + "&h=" + String(humidity) + "&u=" + String(deviceNum);
+    Serial.println(queryString);
+    return sendViaHTTP(queryString, url_th);
 }
