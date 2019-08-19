@@ -37,7 +37,6 @@
 #define BLE_SCAN_WINDOW_SIZE 99
 #define BLE_SCAN_INTERVAL    100
 
-#define TARGET_DEVICE_NAME   "BLE_Gamma:lsj4"
 #define CHAR_UUID_CTL        "00001524-1212-efde-1523-785feabcd123"
 #define CHAR_UUID_MEAS       "00001525-1212-efde-1523-785feabcd123"
 #define CHAR_UUID_LOG        "00001526-1212-efde-1523-785feabcd123"
@@ -70,7 +69,7 @@ BLEScan* pBLEScan;             // Bluetooth Scanner
 BLEClient* pClient;            // BluetoothClient
 BLEAdvertisedDevice* myDevice; // Bluetooth Advertised device
 
-static std::string targetName;
+static std::string *targetName;
 
 static BLEServer *pServer;
 static BLEService *pServerService_wifi;
@@ -84,6 +83,9 @@ static BLECharacteristic *pCharacteristic_deviceName;
 
 const char *ssid = "YOUR_WIFI_SSID";
 const char *pw = "YOUR_WIFI_PW";
+
+std::string *ssid_str = nullptr;
+std::string *pw_str = nullptr;
 
 int scanTime = BLUE_TOOTH_SCAN_TIME;
 
@@ -172,7 +174,9 @@ class WiFiPasswordCallbacks: public BLECharacteristicCallbacks {
         std::string value = pCharacteristic->getValue();
 
         if (value.length() > 0) {
-            targetName = value;
+            if (pw_str != nullptr) delete pw_str;
+            pw_str = new std::string(value);
+
             Serial.println("*********");
             Serial.print("New value: ");
             for (int i = 0; i < value.length(); i++)
@@ -194,7 +198,9 @@ class WiFiNameCallbacks: public BLECharacteristicCallbacks {
         std::string value = pCharacteristic->getValue();
 
         if (value.length() > 0) {
-            ssid = value.c_str();
+            if (ssid_str != nullptr) delete ssid_str;
+            ssid_str = new std::string(value);
+
             Serial.println("*********");
             Serial.print("Received Wi-Fi ssid: ");
             for (int i = 0; i < value.length(); i++)
@@ -213,7 +219,8 @@ class DeviceNameCallbacks: public BLECharacteristicCallbacks {
         std::string value = pCharacteristic->getValue();
 
         if (value.length() > 0) {
-            ssid = value.c_str();
+            if (targetName != nullptr) delete targetName;
+            targetName = new std::string(value);
             Serial.println("*********");
             Serial.print("New BLE device name: ");
             for (int i = 0; i < value.length(); i++)
@@ -252,7 +259,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) {
         Serial.printf("Advertised Device: %s \n", advertisedDevice.toString().c_str());
 
-        if (advertisedDevice.getName().compare(targetName) == 0) {
+        if (advertisedDevice.getName().compare(*targetName) == 0) {
             BLEDevice::getScan()->stop();
 
             // free the pre-allocated memory (if exist), and create new BLEAdvertisedDevice instance
@@ -295,7 +302,7 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, ui
 
 /* Initialise things before starting the main loop */
 void setup() {
-    targetName = TARGET_DEVICE_NAME;
+    targetName = new std::string("BLE_Gamma:lsj4");
 
     Serial.begin(SERIAL_PORT_NUM); //Start Serial monitor in 9600
     initBLE(); // initialise the BLE scanner
@@ -673,7 +680,7 @@ void initBLEServer() {
                       BLECharacteristic::PROPERTY_NOTIFY |
                       BLECharacteristic::PROPERTY_INDICATE
                     );
-    pCharacteristic_deviceName = pServerService_pw->createCharacteristic(
+    pCharacteristic_deviceName = pServerService_deviceName->createCharacteristic(
                       D_NAME_CHAR_UUID,
                       BLECharacteristic::PROPERTY_READ   |
                       BLECharacteristic::PROPERTY_WRITE  |
@@ -721,7 +728,11 @@ void initBLE() {
  * Function that helps the device to set up the WiFi environment.
  */
 void setupWiFi() {
-    WiFi.begin(ssid, pw); //Open the WiFi connection so that ESP32 could send data to server via HTTP/HTTPS protocol.
+    if (ssid_str != nullptr) {
+        WiFi.begin(ssid_str->c_str(), pw_str->c_str());
+    } else {
+        WiFi.begin(ssid, pw); //Open the WiFi connection so that ESP32 could send data to server via HTTP/HTTPS protocol.
+    }
     connectWiFi();
 }
 
