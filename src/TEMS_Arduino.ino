@@ -9,7 +9,7 @@
 
 //-----------------Preprocessors------------------------//
 
-#define PORT_NUMBER          8080
+#define PORT_NUMBER          8090
 #define SERIAL_PORT_NUM      115200
 
 #define DELAY_SEND_RES_RET   200
@@ -65,33 +65,31 @@
 
 //-----------------Global variables---------------------//
 
-BLEScan* pBLEScan;             // Bluetooth Scanner
-BLEClient* pClient;            // BluetoothClient
-BLEAdvertisedDevice* myDevice; // Bluetooth Advertised device
+BLEScan* pBLEScan = nullptr;             // Bluetooth Scanner
+BLEClient* pClient = nullptr;            // BluetoothClient
+BLEAdvertisedDevice* myDevice = nullptr; // Bluetooth Advertised device
 
-static std::string *targetName;
+static std::string *targetName = nullptr;
 
-static BLEServer *pServer;
-static BLEService *pServerService_wifi;
-static BLEService *pServerService_pw;
-static BLECharacteristic *pCharacteristic_wifi;
-static BLECharacteristic *pCharacteristic_pw;
-static BLEAdvertising *pAdvertising;
+static BLEServer *pServer = nullptr;
+static BLEService *pServerService_wifi = nullptr;
+static BLEService *pServerService_pw = nullptr;
+static BLECharacteristic *pCharacteristic_wifi = nullptr;
+static BLECharacteristic *pCharacteristic_pw = nullptr;
+static BLEAdvertising *pAdvertising = nullptr;
 
-static BLEService *pServerService_deviceName;
-static BLECharacteristic *pCharacteristic_deviceName;
+static BLEService *pServerService_deviceName = nullptr;
+static BLECharacteristic *pCharacteristic_deviceName = nullptr;
 
-const char *ssid = "YOUR_WIFI_SSID";
-const char *pw = "YOUR_WIFI_PW";
+const char *ssid = "KT_GiGA_2G_Wave2_794C"; //TODO "YOUR_WIFI_SSID";
+const char *pw = "5de80xx381"; //TODO "YOUR_WIFI_PW";
 
 std::string *ssid_str = nullptr;
 std::string *pw_str = nullptr;
 
 int scanTime = BLUE_TOOTH_SCAN_TIME;
 
-const int GEIGER_DEV_NUM = 18;
-const int TEMP_DEV_NUM = 19;
-const int HUMI_DEV_NUM = 20;
+const String DEV_NUM = "u518";
 
 char *host = "ec2-15-164-218-172.ap-northeast-2.compute.amazonaws.com";
 String hostStr = String(host);
@@ -175,6 +173,7 @@ class WiFiPasswordCallbacks: public BLECharacteristicCallbacks {
 
         if (value.length() > 0) {
             if (pw_str != nullptr) delete pw_str;
+
             pw_str = new std::string(value);
 
             Serial.println("*********");
@@ -220,6 +219,7 @@ class DeviceNameCallbacks: public BLECharacteristicCallbacks {
 
         if (value.length() > 0) {
             if (targetName != nullptr) delete targetName;
+
             targetName = new std::string(value);
             Serial.println("*********");
             Serial.print("New BLE device name: ");
@@ -283,7 +283,7 @@ class MyClientCallback : public BLEClientCallbacks {
 
     void onDisconnect(BLEClient* pclient) {
         connected = false;
-        Serial.println("onDisconnect");
+        Serial.println("onDisconnect() activated");
     }
 };
 
@@ -302,7 +302,7 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, ui
 
 /* Initialise things before starting the main loop */
 void setup() {
-    targetName = new std::string("BLE_Gamma:lsj4");
+    targetName = new std::string("BLE_Gamma:0123");
 
     Serial.begin(SERIAL_PORT_NUM); //Start Serial monitor in 9600
     initBLE(); // initialise the BLE scanner
@@ -353,7 +353,7 @@ void loop() {
 
                 // send tempearture and humidity only when both humidity value and temperature value are valid (non error).
                 if (humidityIsValid && temperatureIsValid) {
-                    sendTemperatureAndHumidity(temp, humd, GEIGER_DEV_NUM);
+                    sendTemperatureAndHumidity(temp, humd, DEV_NUM);
                 }
 
                 serialNum_th += 1;
@@ -387,7 +387,9 @@ void loop() {
             shouldStartAdvertise = false;
         }
 
-        //TODO ????????
+        Serial.print("remain wait time: ");
+        Serial.print(waitTime / 1000);
+        Serial.println(" seconds");
 
         waitTime -= DELAY_TIME_BLE_AD;
         delay(DELAY_TIME_BLE_AD);
@@ -568,7 +570,7 @@ void iterateReturnedResult(uint8_t *rawData) {
 
     float measuredVal = ((float) (val_msb << 8) + val_lsb) / 100.0;
     Serial.printf("measured value = %1.2f\n", measuredVal);
-    sendGeiger(measuredVal, GEIGER_DEV_NUM);
+    sendGeiger(measuredVal, DEV_NUM);
 
     serialNum_g += 1;
 }
@@ -659,12 +661,21 @@ void handshake_setup_BLE() {
  * Initialise the BLE server.
  */
 void initBLEServer() {
+    if (pServer != nullptr) delete pServer;
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
+
+    if (pServerService_wifi != nullptr) delete pServerService_wifi;
+    if (pServerService_pw != nullptr) delete pServerService_pw;
+    if (pServerService_deviceName != nullptr) delete pServerService_deviceName;
 
     pServerService_wifi = pServer->createService(WIFI_SERVICE_UUID);
     pServerService_pw = pServer->createService(WIFI_PW_SERVICE_UUID);
     pServerService_deviceName = pServer->createService(D_NAME_SERVICE_UUID);
+
+    if (pCharacteristic_wifi != nullptr) delete pCharacteristic_wifi;
+    if (pCharacteristic_pw != nullptr) delete pCharacteristic_pw;
+    if (pCharacteristic_deviceName != nullptr) delete pCharacteristic_deviceName;
 
     pCharacteristic_wifi = pServerService_wifi->createCharacteristic(
                       WIFI_NAME_CHAR_UUID,
@@ -709,12 +720,15 @@ void initBLE() {
     Serial.println("Initialise the BLE module");
 
     BLEDevice::init("");
+
+    if(pBLEScan != nullptr) delete(pBLEScan);
     pBLEScan = BLEDevice::getScan(); //create new scan
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
     pBLEScan->setActiveScan(true); //active scan uses more power, but get results faster
     pBLEScan->setInterval(BLE_SCAN_INTERVAL);
     pBLEScan->setWindow(BLE_SCAN_WINDOW_SIZE); // less than or equal to setInterval value
 
+    if(pClient != nullptr) delete(pClient);
     Serial.println(" - Create client");
     pClient  = BLEDevice::createClient();
     Serial.println(" - Client created\n\n");
@@ -728,6 +742,7 @@ void initBLE() {
  * Function that helps the device to set up the WiFi environment.
  */
 void setupWiFi() {
+    if (WiFi.status() != WL_CONNECTED) WiFi.disconnect();
     if (ssid_str != nullptr) {
         WiFi.begin(ssid_str->c_str(), pw_str->c_str());
     } else {
@@ -930,17 +945,15 @@ int sendViaHTTP(String queryString, String url) {
 /**
  * Send the collected geiger data to the server
  */
-int sendGeiger(float measuredVal, int deviceNum) {
-    String queryString = "s=" + String(serialNum_g) + "&g=" + String(measuredVal) + "&u=" + String(deviceNum);
-    Serial.println(queryString);
+int sendGeiger(float measuredVal, String deviceNum) {
+    String queryString = "s=" + String(serialNum_g) + "&g=" + String(measuredVal) + "&u=" + deviceNum;
     return sendViaHTTP(queryString, url_g);
 }
 
 /**
  * Send the temperature data and humidity data to the server.
  */
-int sendTemperatureAndHumidity(float temperature, float humidity, int deviceNum) {
-    String queryString = "s=" + String(serialNum_th) + "&t=" + String(temperature) + "&h=" + String(humidity) + "&u=" + String(deviceNum);
-    Serial.println(queryString);
+int sendTemperatureAndHumidity(float temperature, float humidity, String deviceNum) {
+    String queryString = "s=" + String(serialNum_th) + "&t=" + String(temperature) + "&h=" + String(humidity) + "&u=" + deviceNum;
     return sendViaHTTP(queryString, url_th);
 }
