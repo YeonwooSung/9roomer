@@ -27,6 +27,10 @@ Please download and include the codes from [this repository](https://github.com/
 
 If you go to the "cpp_utils" directory in that repository, you could see the README file that contains the relevant instruction.
 
+Furthermore, according to [this issue](https://github.com/nkolban/esp32-snippets/issues/797), you should delete [this line](https://github.com/nkolban/esp32-snippets/blob/master/cpp_utils/BLEAdvertising.cpp#L496). Because, that line prevents the BLEAdverting instance to stop advertising the ble server.
+
+As we need to stop the BLE server when it changes to the BLE client mode, thus, you should delete that line from BLEAdvertising.cpp file before compile the sketch. Otherwise, the BLE server will keep advertise the server even if the server instance is deleted from the memory (This could generate unexpected errors, for example, NullPointerException, which will crash the device).
+
 
 ### esp32 ble - "sketch too big" issue
 
