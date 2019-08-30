@@ -18,7 +18,6 @@
 #define DELAY_TIME_MAIN_LOOP 500
 #define DELAY_TIME_BLE_SCAN  600
 #define DELAY_TIME_BLE_START 2000
-#define DELAY_TIME_BLE_AD    2000
 #define DELAY_TIME_BLE_CONN  5000
 
 #define DELAY_INIT_SHT20     200
@@ -31,8 +30,6 @@
 
 #define WIFI_CLIENT_TIMEOUT  5000
 
-#define AP_SSID              "esp32"
-
 #define BLUE_TOOTH_SCAN_TIME 50
 #define BLE_SCAN_WINDOW_SIZE 99
 #define BLE_SCAN_INTERVAL    100
@@ -41,13 +38,17 @@
 #define CHAR_UUID_MEAS       "00001525-1212-efde-1523-785feabcd123"
 #define CHAR_UUID_LOG        "00001526-1212-efde-1523-785feabcd123"
 
-#define WIFI_SERVICE_UUID    "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define WIFI_PW_SERVICE_UUID "4fafc202-1fb5-459e-8fcc-c5c9c331914b"
-#define WIFI_NAME_CHAR_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-#define WIFI_PW_CHAR_UUID    "bed5483e-36e1-4688-b7f5-ea07361b26a8"
+#define WIFI_SERVICE_UUID    "4fafc201-1fb5-459e-8fcc-c5c9c331914b" //uuif for wifi name service
+#define WIFI_PW_SERVICE_UUID "4fafc202-1fb5-459e-8fcc-c5c9c331914b" //uuid for wifi pw service
+#define WIFI_NAME_CHAR_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8" //uuid for wifi name characteristic
+#define WIFI_PW_CHAR_UUID    "bed5483e-36e1-4688-b7f5-ea07361b26a8" //uuid for wifi pw characteristic
 
-#define D_NAME_SERVICE_UUID  "4fafc203-1fb5-459e-8fcc-c5c9c331914b"
-#define D_NAME_CHAR_UUID     "bec5483e-36e1-4688-b7f5-ea07361b26a8"
+#define D_NAME_SERVICE_UUID  "4fafc203-1fb5-459e-8fcc-c5c9c331914b" //uuid for the device name setting service
+#define D_NAME_CHAR_UUID     "bec5483e-36e1-4688-b7f5-ea07361b26a8" //uuid for the device name setting characteristic
+
+#define BLE_SERVER_LIFE_TIME 90000
+#define BLE_SERVER_ADD_TIME  120000
+#define BLE_SERVER_SUB_TIME  2000
 
 #define REQ_RESULT_RET_SIZE  1
 #define REQ_LOG_INFOR_SIZE   1
@@ -60,10 +61,21 @@
 
 #define SIZE_OF_UINT8        sizeof(uint8_t)
 
+#define INIT_TARGET_DEV_NAME "BLE_Gamma:0123"
+
 //------------------------------------------------------//
 
+class MyServerCallbacks;
 
 //-----------------Global variables---------------------//
+
+//TODO need to test if DEV_NUM and BLE_DEVICE_NAME work properly
+const std::string DEVICE_NUMBER = "u518";
+const String DEV_NUM = String(DEVICE_NUMBER.c_str());
+const std::string BLE_DEVICE_NAME = "9room-" + DEVICE_NUMBER;
+
+int bleServerLifeTime;
+
 
 BLEScan* pBLEScan = nullptr;             // Bluetooth Scanner
 BLEClient* pClient = nullptr;            // BluetoothClient
@@ -77,19 +89,18 @@ static BLEService *pServerService_pw = nullptr;
 static BLECharacteristic *pCharacteristic_wifi = nullptr;
 static BLECharacteristic *pCharacteristic_pw = nullptr;
 static BLEAdvertising *pAdvertising = nullptr;
+static MyServerCallbacks *serverCallback = nullptr;
 
 static BLEService *pServerService_deviceName = nullptr;
 static BLECharacteristic *pCharacteristic_deviceName = nullptr;
 
-const char *ssid = "KT_GiGA_2G_Wave2_794C"; //TODO "YOUR_WIFI_SSID";
-const char *pw = "5de80xx381"; //TODO "YOUR_WIFI_PW";
+const char *ssid = "YOUR_WIFI_SSID";
+const char *pw = "YOUR_WIFI_PW";
 
 std::string *ssid_str = nullptr;
 std::string *pw_str = nullptr;
 
 int scanTime = BLUE_TOOTH_SCAN_TIME;
-
-const String DEV_NUM = "u518";
 
 char *host = "ec2-15-164-218-172.ap-northeast-2.compute.amazonaws.com";
 String hostStr = String(host);
@@ -104,7 +115,8 @@ bool handshake;
 
 static bool doConnect = false;
 static bool connected = false;
-static bool shouldStartAdvertise;
+
+int LED_BUILTIN = 2;
 
 static BLEUUID WP_CTL_UUID(CHAR_UUID_CTL);
 static BLEUUID WP_MEAS_UUID(CHAR_UUID_MEAS);
@@ -125,7 +137,6 @@ static uint8_t cmd_LOG_DATA_SEND = 0xA1;
 static uint8_t cmd_BLE_USER_NAME_SET = 0x30;
 static uint8_t cmd_BLE_USER_NAME_QUERY = 0x31;
 
-static int sensorNum = 999;
 static int serialNum_g = 0;
 static int serialNum_th = 0;
 
@@ -155,6 +166,7 @@ void scanBlueToothDevice();
 int scanDevices();
 void checkCharacteristic(BLERemoteCharacteristic* pRemoteCharacteristic);
 void getCharacteristicFromService(BLERemoteService* pRemoteService);
+void removeBLEServer();
 bool connectToServer();
 bool validate_sht20(float val);
 int sendViaHTTP(String queryString, String url);
@@ -184,8 +196,6 @@ class WiFiPasswordCallbacks: public BLECharacteristicCallbacks {
             Serial.println();
             Serial.println("*********");
         }
-
-        setupWiFi();
     }
 };
 
@@ -237,10 +247,11 @@ class DeviceNameCallbacks: public BLECharacteristicCallbacks {
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         Serial.println("- MyServerCallbacks::onConnect() executed");
+
+        bleServerLifeTime += BLE_SERVER_ADD_TIME;
     };
 
     void onDisconnect(BLEServer* pServer) {
-        shouldStartAdvertise = false;
         Serial.println("- MyServerCallbacks::onDisconnect() executed");
     }
 };
@@ -302,11 +313,38 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, ui
 
 /* Initialise things before starting the main loop */
 void setup() {
-    targetName = new std::string("BLE_Gamma:0123");
+    targetName = new std::string(INIT_TARGET_DEV_NAME);
 
     Serial.begin(SERIAL_PORT_NUM); //Start Serial monitor in 9600
+
+    Serial.println("Initialise the BLE module");
+    BLEDevice::init(BLE_DEVICE_NAME);
+
+    initBLEServer();
+
+    bleServerLifeTime = BLE_SERVER_LIFE_TIME;
+
+    pinMode (LED_BUILTIN, OUTPUT);
+
+    while (bleServerLifeTime > 0) {
+        digitalWrite(LED_BUILTIN, HIGH);
+        delay(1000);
+        digitalWrite(LED_BUILTIN, LOW);
+        delay(1000);
+        bleServerLifeTime -= BLE_SERVER_SUB_TIME;
+        Serial.printf("BLE server mode remaining time: %d sec\n", bleServerLifeTime / 1000);
+    }
+
+    Serial.println("\nTerminating BLE server mode");
+    removeBLEServer();
+
+    Serial.println("BLE server mode terminated!\nBLE client mode start!\n\n");
+
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(3000);
+    digitalWrite(LED_BUILTIN, LOW);
+
     initBLE(); // initialise the BLE scanner
-    shouldStartAdvertise = false;
     scanBlueToothDevice(); //scan a bluetooth device
     connectBlueToothDevice(); //connect a bluetooth device
     handshake = false;
@@ -380,21 +418,6 @@ void loop() {
         waitTime = DELAY_TIME_MAIN_LOOP;
     }
 
-    while (waitTime > DELAY_TIME_BLE_AD) {
-        if (shouldStartAdvertise) {
-            pServer->startAdvertising(); // restart advertising
-            Serial.println("DEBUGGING (main loop) - start advertising");
-            shouldStartAdvertise = false;
-        }
-
-        Serial.print("remain wait time: ");
-        Serial.print(waitTime / 1000);
-        Serial.println(" seconds");
-
-        waitTime -= DELAY_TIME_BLE_AD;
-        delay(DELAY_TIME_BLE_AD);
-    }
-
     delay(waitTime);
 }
 
@@ -443,7 +466,7 @@ void setDateTime(uint8_t *dateTimeBuffer) {
     String header = "GET " + url_time + " HTTP/1.1";
 
     client.println(header);
-    client.println("User-Agent: ESP32_TEMS");
+    client.println("User-Agent: ESP32_9roomer");
     client.println("Host: " + hostStr);
     client.println("Connection: closed");
     client.println();
@@ -657,13 +680,34 @@ void handshake_setup_BLE() {
 }
 
 
+void removeBLEServer() {
+    pAdvertising->stop();
+
+    if (pAdvertising != nullptr) delete pAdvertising;
+
+    if (pCharacteristic_wifi != nullptr) delete pCharacteristic_wifi;
+    if (pCharacteristic_pw != nullptr) delete pCharacteristic_pw;
+    if (pCharacteristic_deviceName != nullptr) delete pCharacteristic_deviceName;
+
+    if (pServerService_wifi != nullptr) delete pServerService_wifi;
+    if (pServerService_pw != nullptr) delete pServerService_pw;
+    if (pServerService_deviceName != nullptr) delete pServerService_deviceName;
+
+    if (serverCallback != nullptr) delete serverCallback;
+    if (pServer != nullptr) delete pServer;
+
+    //TODO BLEDevice::deinit(false);
+}
+
+
 /**
  * Initialise the BLE server.
  */
 void initBLEServer() {
     if (pServer != nullptr) delete pServer;
     pServer = BLEDevice::createServer();
-    pServer->setCallbacks(new MyServerCallbacks());
+    serverCallback = new MyServerCallbacks();
+    pServer->setCallbacks(serverCallback);
 
     if (pServerService_wifi != nullptr) delete pServerService_wifi;
     if (pServerService_pw != nullptr) delete pServerService_pw;
@@ -717,10 +761,7 @@ void initBLEServer() {
  * Initialise the BLE settings so that the ESP32 device could scan the BLE advertising devices.
  */
 void initBLE() {
-    Serial.println("Initialise the BLE module");
-
-    BLEDevice::init("");
-
+    Serial.println("Generate BLE Scanner to scan ble devices");
     if(pBLEScan != nullptr) delete(pBLEScan);
     pBLEScan = BLEDevice::getScan(); //create new scan
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
@@ -734,8 +775,6 @@ void initBLE() {
     Serial.println(" - Client created\n\n");
 
     pClient->setClientCallbacks(new MyClientCallback());
-
-    initBLEServer(); //init the ble server
 }
 
 /**
