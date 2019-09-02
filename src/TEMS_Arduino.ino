@@ -94,8 +94,8 @@ static MyServerCallbacks *serverCallback = nullptr;
 static BLEService *pServerService_deviceName = nullptr;
 static BLECharacteristic *pCharacteristic_deviceName = nullptr;
 
-const char *ssid = "YOUR_WIFI_SSID";
-const char *pw = "YOUR_WIFI_PW";
+const char *ssid = "KT_GiGA_2G_Wave2_794C"; //TODO "YOUR_WIFI_SSID";
+const char *pw = "5de80xx381"; //TODO "YOUR_WIFI_PW";
 
 std::string *ssid_str = nullptr;
 std::string *pw_str = nullptr;
@@ -166,11 +166,11 @@ void scanBlueToothDevice();
 int scanDevices();
 void checkCharacteristic(BLERemoteCharacteristic* pRemoteCharacteristic);
 void getCharacteristicFromService(BLERemoteService* pRemoteService);
-void removeBLEServer();
 bool connectToServer();
 bool validate_sht20(float val);
 int sendViaHTTP(String queryString, String url);
 int sendGeiger(float measuredVal, int deviceNum);
+void removeAdvertising();
 int sendTemperatureAndHumidity(float temperature, float humidity, int deviceNum);
 
 //------------------------------------------------------//
@@ -336,7 +336,8 @@ void setup() {
     }
 
     Serial.println("\nTerminating BLE server mode");
-    removeBLEServer();
+    removeAdvertising();
+    
 
     Serial.println("BLE server mode terminated!\nBLE client mode start!\n\n");
 
@@ -591,7 +592,7 @@ void iterateReturnedResult(uint8_t *rawData) {
     int val_msb = rawData[7];
     int val_lsb = rawData[8];
 
-    float measuredVal = ((float) (val_msb << 8) + val_lsb) / 100.0;
+    float measuredVal = ((float) (val_lsb << 8) + val_msb) / 100.0;
     Serial.printf("measured value = %1.2f\n", measuredVal);
     sendGeiger(measuredVal, DEV_NUM);
 
@@ -679,8 +680,7 @@ void handshake_setup_BLE() {
     }
 }
 
-
-void removeBLEServer() {
+void removeAdvertising() {
     pAdvertising->stop();
 
     if (pAdvertising != nullptr) delete pAdvertising;
@@ -694,11 +694,9 @@ void removeBLEServer() {
     if (pServerService_deviceName != nullptr) delete pServerService_deviceName;
 
     if (serverCallback != nullptr) delete serverCallback;
-    if (pServer != nullptr) delete pServer;
 
-    //TODO BLEDevice::deinit(false);
+    BLEDevice::removeServer();
 }
-
 
 /**
  * Initialise the BLE server.
