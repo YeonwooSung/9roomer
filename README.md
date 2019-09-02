@@ -40,16 +40,3 @@ To overcome this problem, you need to modify the partition of the esp32 board.
 
 I found an useful link from google - please click [here](https://github.com/nkolban/esp32-snippets/issues/441).
 
-
-## Contribution
-
-The codes in this repository are written for TEMS project of Technonia, thus, I would recommend you to fork the repository if you want to modify the codes.
-
-However, any questions are welcome - please open a new issue if you find some problem or have some question.
-
-
-## Copyrights
-
-TEMS stands for Technonia Environment Monitoring System.
-As the name of the project depicts, this repository contains the codes for arduino part of the TEMS project.
-Thus, it is possible to say that all copyrights of this repository belong to both Yeonwoo Sung (the main programmer of the TEMS project) and Technonia.
