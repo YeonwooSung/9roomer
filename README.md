@@ -2,8 +2,12 @@
 
 ## Hardware
 
-This repository contains the codes for esp32 and sht20 sensor.
-You need to compile and upload the sketch to the esp32 board.
+This repository contains the codes for 9room project.
+The 9roomer is a device that uses esp32 board with sht20 sensor.
+The main aim of 9roomer is to collect the temperature, humidity and radioactive-rays data and send the collected data to the 9roomwe server.
+
+
+To run the 9roomer, you need to compile and upload the sketch to the esp32 board.
 Before upload the sketch, you should connect esp32 board and sht20 sensor correctly.
 
 The esp32 board and sht20 uses I2C communication.
