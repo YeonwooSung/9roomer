@@ -5,6 +5,8 @@
 #include "BLEAdvertisedDevice.h"
 #include "BLEDevice.h"
 #include "BLEServer.h"
+#include "SPIFFS.h"
+#include "FS.h"
 
 
 //-----------------Preprocessors------------------------//
@@ -46,7 +48,7 @@
 #define D_NAME_SERVICE_UUID  "4fafc203-1fb5-459e-8fcc-c5c9c331914b" //uuid for the device name setting service
 #define D_NAME_CHAR_UUID     "bec5483e-36e1-4688-b7f5-ea07361b26a8" //uuid for the device name setting characteristic
 
-#define BLE_SERVER_LIFE_TIME 90000
+#define BLE_SERVER_LIFE_TIME 10000 //180000
 #define BLE_SERVER_ADD_TIME  120000
 #define BLE_SERVER_SUB_TIME  2000
 
@@ -69,7 +71,6 @@ class MyServerCallbacks;
 
 //-----------------Global variables---------------------//
 
-//TODO need to test if DEV_NUM and BLE_DEVICE_NAME work properly
 const std::string DEVICE_NUMBER = "u518";
 const String DEV_NUM = String(DEVICE_NUMBER.c_str());
 const std::string BLE_DEVICE_NAME = "9room-" + DEVICE_NUMBER;
@@ -94,15 +95,16 @@ static MyServerCallbacks *serverCallback = nullptr;
 static BLEService *pServerService_deviceName = nullptr;
 static BLECharacteristic *pCharacteristic_deviceName = nullptr;
 
-const char *ssid = "KT_GiGA_2G_Wave2_794C"; //TODO "YOUR_WIFI_SSID";
-const char *pw = "5de80xx381"; //TODO "YOUR_WIFI_PW";
+const char *ssid = "YOUR_WIFI_SSID";
+const char *pw = "YOUR_WIFI_PW";
 
 std::string *ssid_str = nullptr;
 std::string *pw_str = nullptr;
 
 int scanTime = BLUE_TOOTH_SCAN_TIME;
 
-char *host = "ec2-15-164-218-172.ap-northeast-2.compute.amazonaws.com";
+//char *host = "ec2-15-164-218-172.ap-northeast-2.compute.amazonaws.com";
+char *host = "groom.techtest.shop";
 String hostStr = String(host);
 String url_g = "/logoneg";
 String url_th = "/logoneth";
@@ -172,6 +174,9 @@ int sendViaHTTP(String queryString, String url);
 int sendGeiger(float measuredVal, int deviceNum);
 void removeAdvertising();
 int sendTemperatureAndHumidity(float temperature, float humidity, int deviceNum);
+void readFile(fs::FS &fs, const char * path, int type);
+void writeFile(fs::FS &fs, const char * path, const char * message);
+void deleteFile(fs::FS &fs, const char * path);
 
 //------------------------------------------------------//
 
@@ -187,6 +192,9 @@ class WiFiPasswordCallbacks: public BLECharacteristicCallbacks {
             if (pw_str != nullptr) delete pw_str;
 
             pw_str = new std::string(value);
+
+            deleteFile(SPIFFS, "/wifi_pw.txt");
+            writeFile(SPIFFS, "/wifi_pw.txt", value.c_str());
 
             Serial.println("*********");
             Serial.print("New value: ");
@@ -210,6 +218,9 @@ class WiFiNameCallbacks: public BLECharacteristicCallbacks {
             if (ssid_str != nullptr) delete ssid_str;
             ssid_str = new std::string(value);
 
+            deleteFile(SPIFFS, "/wifi_name.txt");
+            writeFile(SPIFFS, "/wifi_name.txt", value.c_str());
+
             Serial.println("*********");
             Serial.print("Received Wi-Fi ssid: ");
             for (int i = 0; i < value.length(); i++)
@@ -231,6 +242,10 @@ class DeviceNameCallbacks: public BLECharacteristicCallbacks {
             if (targetName != nullptr) delete targetName;
 
             targetName = new std::string(value);
+
+            deleteFile(SPIFFS, "/device_name.txt");
+            writeFile(SPIFFS, "/device_name.txt", value.c_str());
+
             Serial.println("*********");
             Serial.print("New BLE device name: ");
             for (int i = 0; i < value.length(); i++)
@@ -315,35 +330,43 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, ui
 void setup() {
     targetName = new std::string(INIT_TARGET_DEV_NAME);
 
-    Serial.begin(SERIAL_PORT_NUM); //Start Serial monitor in 9600
+    Serial.begin(SERIAL_PORT_NUM); //Start Serial monitor in 115200
 
     Serial.println("Initialise the BLE module");
     BLEDevice::init(BLE_DEVICE_NAME);
 
-    initBLEServer();
+    if (!SPIFFS.begin(true)) {
+        Serial.println("An error has occurred while mounthing SPIFFS\n");
+    } else {
 
-    bleServerLifeTime = BLE_SERVER_LIFE_TIME;
+        readFile(SPIFFS, "/wifi_name.txt", 1);
+        readFile(SPIFFS, "/wifi_pw.txt", 2);
+        readFile(SPIFFS, "/device_name.txt", 3);
 
-    pinMode (LED_BUILTIN, OUTPUT);
+        initBLEServer();
 
-    while (bleServerLifeTime > 0) {
+        bleServerLifeTime = BLE_SERVER_LIFE_TIME;
+
+        pinMode (LED_BUILTIN, OUTPUT);
+
+        while (bleServerLifeTime > 0) {
+            digitalWrite(LED_BUILTIN, HIGH);
+            delay(1000);
+            digitalWrite(LED_BUILTIN, LOW);
+            delay(1000);
+            bleServerLifeTime -= BLE_SERVER_SUB_TIME;
+            Serial.printf("BLE server mode remaining time: %d sec\n", bleServerLifeTime / 1000);
+        }
+
+        Serial.println("\nTerminating BLE server mode");
+        removeAdvertising();
+
+        Serial.println("BLE server mode terminated!\nBLE client mode start!\n\n");
+
         digitalWrite(LED_BUILTIN, HIGH);
-        delay(1000);
+        delay(3000);
         digitalWrite(LED_BUILTIN, LOW);
-        delay(1000);
-        bleServerLifeTime -= BLE_SERVER_SUB_TIME;
-        Serial.printf("BLE server mode remaining time: %d sec\n", bleServerLifeTime / 1000);
     }
-
-    Serial.println("\nTerminating BLE server mode");
-    removeAdvertising();
-    
-
-    Serial.println("BLE server mode terminated!\nBLE client mode start!\n\n");
-
-    digitalWrite(LED_BUILTIN, HIGH);
-    delay(3000);
-    digitalWrite(LED_BUILTIN, LOW);
 
     initBLE(); // initialise the BLE scanner
     scanBlueToothDevice(); //scan a bluetooth device
@@ -420,6 +443,70 @@ void loop() {
     }
 
     delay(waitTime);
+}
+
+void readFile(fs::FS &fs, const char * path, int type) {
+    Serial.printf("Reading file: %s\r\n", path);
+
+    File file = fs.open(path);
+
+    if(!file || file.isDirectory()){
+        Serial.println("- failed to open file for reading");
+        return;
+    }
+
+    Serial.println("- read from file:");
+
+    std::string readLine = "";
+
+    while(file.available()){
+        readLine += char(file.read());
+    }
+
+    Serial.println(readLine.c_str());
+
+    switch (type) {
+        case 1 :
+            if (ssid_str != nullptr) delete ssid_str;
+            ssid_str = new std::string(readLine);
+            break;
+        case 2 :
+            if (pw_str != nullptr) delete pw_str;
+            pw_str = new std::string(readLine);
+            break;
+        case 3 :
+            if (targetName != nullptr) delete targetName;
+            targetName = new std::string(readLine);
+            break;
+        default :
+            Serial.println("Invalid type!");
+    }
+
+    Serial.println("\nFinished reading file\n\n");
+}
+
+void writeFile(fs::FS &fs, const char * path, const char * message) {
+    Serial.printf("Writing file: %s\r\n", path);
+
+    File file = fs.open(path, FILE_WRITE);
+    if(!file){
+        Serial.println("- failed to open file for writing");
+        return;
+    }
+    if(file.print(message)){
+        Serial.println("- file written\n");
+    } else {
+        Serial.println("- frite failed\n");
+    }
+}
+
+void deleteFile(fs::FS &fs, const char * path) {
+    Serial.printf("Deleting file: %s\r\n", path);
+    if(fs.remove(path)){
+        Serial.println("- file deleted\n");
+    } else {
+        Serial.println("- delete failed\n");
+    }
 }
 
 
@@ -501,6 +588,8 @@ void setDateTime(uint8_t *dateTimeBuffer) {
     uint8_t second = line.substring(17, 19).toInt();
 
     Serial.println("\nData sending process success!\n"); //to debug
+
+    client.stop();
 
     dateTimeBuffer += 2;
     *dateTimeBuffer = year;
@@ -780,10 +869,20 @@ void initBLE() {
  */
 void setupWiFi() {
     if (WiFi.status() != WL_CONNECTED) WiFi.disconnect();
+    WiFi.mode(WIFI_STA); //init wifi mode
+
     if (ssid_str != nullptr) {
-        WiFi.begin(ssid_str->c_str(), pw_str->c_str());
+        if (pw_str == nullptr) {
+            WiFi.begin(ssid_str->c_str());
+        } else {
+            WiFi.begin(ssid_str->c_str(), pw_str->c_str());
+        }
     } else {
-        WiFi.begin(ssid, pw); //Open the WiFi connection so that ESP32 could send data to server via HTTP/HTTPS protocol.
+        if (pw == "") {
+            WiFi.begin(ssid); //Open the WiFi connection so that ESP32 could send data to server via HTTP/HTTPS protocol.
+        } else {
+            WiFi.begin(ssid, pw); //Open the WiFi connection so that ESP32 could send data to server via HTTP/HTTPS protocol.
+        }
     }
     connectWiFi();
 }
@@ -968,22 +1067,26 @@ int sendViaHTTP(String queryString, String url) {
         return 0;
     }
 
-    String header = "GET " + url + "?" + queryString + " HTTP/1.1";
+    String header = "GET " + url + queryString + " HTTP/1.1";
 
     client.println(header);
-    client.println("User-Agent: groomer");
+    client.println("User-Agent: ESP32-groomer");
     client.println("Host: " + hostStr);
     client.println("Connection: closed");
     client.println();
 
     Serial.println("Data sending process success!\n"); //to debug
+
+    client.stop();
+
+    return 1;
 }
 
 /**
  * Send the collected geiger data to the server
  */
 int sendGeiger(float measuredVal, String deviceNum) {
-    String queryString = "s=" + String(serialNum_g) + "&g=" + String(measuredVal) + "&u=" + deviceNum;
+    String queryString = "?s=" + String(serialNum_g) + "&g=" + String(measuredVal) + "&u=" + deviceNum;
     return sendViaHTTP(queryString, url_g);
 }
 
@@ -991,6 +1094,6 @@ int sendGeiger(float measuredVal, String deviceNum) {
  * Send the temperature data and humidity data to the server.
  */
 int sendTemperatureAndHumidity(float temperature, float humidity, String deviceNum) {
-    String queryString = "s=" + String(serialNum_th) + "&t=" + String(temperature) + "&h=" + String(humidity) + "&u=" + deviceNum;
+    String queryString = "?s=" + String(serialNum_th) + "&t=" + String(temperature) + "&h=" + String(humidity) + "&u=" + deviceNum;
     return sendViaHTTP(queryString, url_th);
 }
