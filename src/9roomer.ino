@@ -48,7 +48,7 @@
 #define D_NAME_SERVICE_UUID  "4fafc203-1fb5-459e-8fcc-c5c9c331914b" //uuid for the device name setting service
 #define D_NAME_CHAR_UUID     "bec5483e-36e1-4688-b7f5-ea07361b26a8" //uuid for the device name setting characteristic
 
-#define BLE_SERVER_LIFE_TIME 10000 //180000
+#define BLE_SERVER_LIFE_TIME 180000
 #define BLE_SERVER_ADD_TIME  120000
 #define BLE_SERVER_SUB_TIME  2000
 
